@@ -67,12 +67,21 @@ def main():
         score_dataframe(df, RULE_SCORES_JSONL, scorer="rule")
     elif args.scorer == "medgemma":
         print("[2] MedGemma uncertainty scoring (exclusive)...")
-        print("    Loading MedGemma model (this can take several minutes)...")
-        mg = MedGemmaUncertaintyScorer(device=args.device)
-        score_dataframe(
-            df, MEDGEMMA_SCORES_JSONL, scorer="medgemma",
-            medgemma=mg, batch_size=args.batch_size,
-        )
+        # Skip loading the model entirely if every sample is already cached.
+        from medgemma_uncertainty import _load_cached_sample_ids
+        cached = _load_cached_sample_ids(MEDGEMMA_SCORES_JSONL)
+        remaining = df[~df["sample_id"].isin(cached)]
+        if remaining.empty:
+            print(f"    All {len(df)} samples already in cache "
+                  f"{MEDGEMMA_SCORES_JSONL.name}; skipping MedGemma load.")
+        else:
+            print(f"    {len(remaining)}/{len(df)} samples need scoring. "
+                  "Loading MedGemma model (this can take several minutes)...")
+            mg = MedGemmaUncertaintyScorer(device=args.device)
+            score_dataframe(
+                df, MEDGEMMA_SCORES_JSONL, scorer="medgemma",
+                medgemma=mg, batch_size=args.batch_size,
+            )
     elif args.scorer == "both":
         print("[2a] Rule-based uncertainty scoring...")
         score_dataframe(df, RULE_SCORES_JSONL, scorer="rule")

@@ -30,8 +30,15 @@ def plot_iou_by_group(df: pd.DataFrame, out_path: Path = FIG_IOU_BY_GROUP) -> No
     fig, ax = plt.subplots(figsize=(6, 5))
     groups = ["certain", "uncertain"]
     data = [df.loc[df["uncertainty_label"] == g, "reader_iou"].dropna().to_numpy() for g in groups]
-    bp = ax.boxplot(data, labels=[f"{g}\n(n={len(d)})" for g, d in zip(groups, data)],
-                    showfliers=False, patch_artist=True)
+    tick_labels = [f"{g}\n(n={len(d)})" for g, d in zip(groups, data)]
+    try:
+        # matplotlib >= 3.9
+        bp = ax.boxplot(data, tick_labels=tick_labels,
+                        showfliers=False, patch_artist=True)
+    except TypeError:
+        # matplotlib < 3.9
+        bp = ax.boxplot(data, labels=tick_labels,
+                        showfliers=False, patch_artist=True)
     colors = ["#4C9F70", "#E07B39"]
     for patch, c in zip(bp["boxes"], colors):
         patch.set_facecolor(c)

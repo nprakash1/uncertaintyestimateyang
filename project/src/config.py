@@ -17,7 +17,10 @@ RAW_GROUNDED_REPORTS = RAW_DIR / "grounded_reports_20240819.json"
 
 # Processed outputs
 SAMPLES_TWO_READERS_CSV = PROCESSED_DIR / "samples_with_two_readers.csv"
-MEDGEMMA_SCORES_JSONL = PROCESSED_DIR / "medgemma_uncertainty_scores.jsonl"
+# Spatial-uncertainty prompt has its own cache so prior diagnostic-uncertainty
+# runs are not overwritten or mixed.  See PROMPT_TEMPLATE in
+# medgemma_uncertainty.py.
+MEDGEMMA_SCORES_JSONL = PROCESSED_DIR / "medgemma_uncertainty_scores_spatial.jsonl"
 RULE_SCORES_JSONL = PROCESSED_DIR / "rule_uncertainty_scores.jsonl"
 SAMPLES_WITH_IOU_CSV = PROCESSED_DIR / "samples_with_uncertainty_and_iou.csv"
 

@@ -42,34 +42,29 @@ from config import (
 # Rule-based baseline (Step 9)
 # ---------------------------------------------------------------------------
 
+# Spatial-uncertainty triggers only (boundary / extent / visibility).
+# Diagnostic hedges like "possible", "cannot exclude", "suspicious for" are
+# intentionally excluded -- this study tests whether *spatial* language in
+# the report tracks spatial inter-reader disagreement.
 UNCERTAIN_TERMS: List[str] = [
-    "possible",
-    "possibly",
-    "questionable",
-    "may represent",
-    "could represent",
-    "cannot exclude",
-    "can't exclude",
-    "cannot be excluded",
-    "cannot rule out",
-    "suspicious for",
-    "suggestive of",
-    "subtle",
     "ill-defined",
     "ill defined",
-    "equivocal",
-    "difficult to exclude",
-    "difficult to assess",
-    "probable",
-    "probably",
-    "likely",
-    "apparent",
-    "appears",
-    "may be",
-    "might",
-    "compatible with",
-    "consistent with",
+    "poorly defined",
+    "poorly-defined",
+    "indistinct",
+    "vague",
+    "subtle",
+    "faint",
+    "hazy",
+    "barely visible",
+    "blurred",
+    "blurry",
+    "fuzzy",
+    "obscured",
+    "ill-circumscribed",
+    "ill circumscribed",
 ]
+
 
 
 def rule_based_classify(sentence: str) -> Dict:
@@ -95,7 +90,14 @@ def rule_based_classify(sentence: str) -> Dict:
 # MedGemma prompt + scorer
 # ---------------------------------------------------------------------------
 
-PROMPT_TEMPLATE = """You are classifying uncertainty in a chest X-ray radiology report finding sentence.
+PROMPT_TEMPLATE = """You are classifying SPATIAL uncertainty in a chest X-ray radiology report finding sentence.
+
+We are asking ONE specific question: does the sentence's language indicate that the
+LOCATION, BOUNDARIES, EXTENT, or VISIBILITY of the finding is unclear, ill-defined,
+indistinct, faint, or hard to delineate spatially?
+
+We are NOT asking about diagnostic uncertainty (whether the finding exists or what
+disease it represents). Diagnostic hedges alone do NOT count as spatial uncertainty.
 
 Sentence:
 \"{sentence}\"
@@ -108,19 +110,48 @@ Return ONLY valid JSON with this exact schema:
 "reason": string
 }}
 
-Definitions:
-- Use "uncertain" if the sentence suggests uncertainty about whether the finding exists, what it represents, or how clearly it is seen.
-- Use "certain" if the sentence describes the finding as present or clearly visualized without hedging.
-- Do not mark severity words like "mild" or size words like "small" as uncertain unless they appear with hedge words like "possible", "questionable", "may represent", or "cannot exclude".
+Decision rules:
+- Label "uncertain" ONLY when the sentence uses language indicating that the
+  spatial extent, boundary, location, or visibility of the finding is unclear.
+  Typical spatial-uncertainty triggers include:
+    "ill-defined", "ill defined", "poorly defined", "ill-circumscribed",
+    "indistinct", "vague", "blurred", "fuzzy", "hazy", "obscured",
+    "subtle", "faint", "barely visible".
+- Label "certain" when the spatial extent / boundary of the finding is described
+  as clear, well-defined, well-circumscribed, sharply marginated, or simply named
+  without spatial hedging.
+- IMPORTANT: do NOT label "uncertain" just because the sentence uses diagnostic
+  hedges such as "possible", "possibly", "cannot exclude", "may represent",
+  "suspicious for", "suggestive of", "probable", "likely". Those reflect
+  diagnostic uncertainty, not spatial uncertainty. A sentence like
+  "Possible pneumonia." with no spatial language is "certain" here.
+- If a sentence contains BOTH diagnostic and spatial hedging
+  (e.g. "possible subtle ill-defined opacity"), it IS "uncertain" because of the
+  spatial words "subtle" and "ill-defined" — list only the spatial words in
+  uncertainty_triggers.
+- Size or severity words ("small", "mild", "large", "extensive") are NOT spatial
+  uncertainty and must not be triggers.
 
 Examples:
-Sentence: "Possible subtle left lower lobe opacity."
+Sentence: "Ill-defined left lower lobe opacity."
 Output:
-{{"uncertainty_label": "uncertain", "confidence": 0.95, "uncertainty_triggers": ["possible","subtle"], "reason": "The sentence uses possible and subtle, indicating uncertainty about the presence or visibility of the opacity."}}
+{{"uncertainty_label": "uncertain", "confidence": 0.95, "uncertainty_triggers": ["ill-defined"], "reason": "The boundaries of the opacity are described as ill-defined."}}
 
-Sentence: "Left pleural effusion is present."
+Sentence: "Subtle faint opacity in the left lung base."
 Output:
-{{"uncertainty_label": "certain", "confidence": 0.95, "uncertainty_triggers": [], "reason": "The sentence states the finding is present without hedging."}}
+{{"uncertainty_label": "uncertain", "confidence": 0.9, "uncertainty_triggers": ["subtle","faint"], "reason": "Subtle and faint indicate the finding is barely visible / poorly delineated."}}
+
+Sentence: "Possible pneumonia."
+Output:
+{{"uncertainty_label": "certain", "confidence": 0.85, "uncertainty_triggers": [], "reason": "Only diagnostic hedging ('possible') — no spatial uncertainty language."}}
+
+Sentence: "Well-circumscribed right lower lobe nodule."
+Output:
+{{"uncertainty_label": "certain", "confidence": 0.95, "uncertainty_triggers": [], "reason": "The finding has well-defined boundaries."}}
+
+Sentence: "Large left pleural effusion is present."
+Output:
+{{"uncertainty_label": "certain", "confidence": 0.95, "uncertainty_triggers": [], "reason": "The finding is clearly described; 'large' is size, not spatial uncertainty."}}
 
 Now classify the sentence above. Return ONLY the JSON object, with no extra text.
 """

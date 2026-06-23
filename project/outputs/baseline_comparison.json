@@ -1,0 +1,21 @@
+{
+  "rule": {
+    "certain": {
+      "n": 4868,
+      "mean_iou": 0.5036140883546136,
+      "median_iou": 0.5330312871256453,
+      "std_iou": 0.22805520844130134,
+      "mean_iou_ci_low": 0.4972911678153109,
+      "mean_iou_ci_high": 0.5100319604145729
+    },
+    "uncertain": {
+      "n": 374,
+      "mean_iou": 0.43238947168954855,
+      "median_iou": 0.45020488037212386,
+      "std_iou": 0.20720669571451078,
+      "mean_iou_ci_low": 0.4114295931184869,
+      "mean_iou_ci_high": 0.4523239561502071
+    },
+    "delta_mean_iou_certain_minus_uncertain": 0.07122461666506508
+  }
+}

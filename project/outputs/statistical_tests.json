@@ -1,0 +1,15 @@
+{
+  "n_certain": 4868,
+  "n_uncertain": 374,
+  "mannwhitneyu": {
+    "U": 1083386.0,
+    "p_value_certain_gt_uncertain": 4.2216730599870824e-10,
+    "p_value_two_sided": 8.443346119974165e-10
+  },
+  "bootstrap_delta": {
+    "delta_mean": 0.07122461666506508,
+    "ci_low": 0.04989740682012587,
+    "ci_high": 0.09305079876100981
+  },
+  "permutation_p_value": 0.0001999600079984003
+}

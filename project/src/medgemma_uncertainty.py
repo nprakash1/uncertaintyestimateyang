@@ -42,28 +42,69 @@ from config import (
 # Rule-based baseline (Step 9)
 # ---------------------------------------------------------------------------
 
-# Spatial-uncertainty triggers only (boundary / extent / visibility).
-# Diagnostic hedges like "possible", "cannot exclude", "suspicious for" are
-# intentionally excluded -- this study tests whether *spatial* language in
-# the report tracks spatial inter-reader disagreement.
+# Bag-of-words hedging dictionary (rule-based baseline).
+#
+# Combines:
+#   * diagnostic hedges (does the finding exist? what does it represent?)
+#   * spatial / visibility hedges (where is it? how clearly bounded?)
+#
+# Multi-word phrases are matched as substrings (case-insensitive) so e.g.
+# "may represent" matches "may represent a pleural effusion".  Single
+# tokens are matched as whole words via a word-boundary regex below so we
+# don't flag "ill" inside "still", etc.
 UNCERTAIN_TERMS: List[str] = [
+    # ---- diagnostic hedges --------------------------------------------
+    "possible",
+    "possibly",
+    "probable",
+    "probably",
+    "likely",
+    "questionable",
+    "equivocal",
+    "may represent",
+    "could represent",
+    "may correspond",
+    "could correspond",
+    "may be",
+    "might",
+    "appears",
+    "apparent",
+    "cannot exclude",
+    "can't exclude",
+    "cannot be excluded",
+    "cannot rule out",
+    "difficult to exclude",
+    "difficult to assess",
+    "suspicious for",
+    "suspicion of",
+    "suggestive of",
+    "suggesting",
+    "suggests",
+    "compatible with",
+    "consistent with",
+    "rule out",
+    "to rule out",
+    "vs ",
+    "versus",
+    # ---- spatial / boundary / visibility hedges -----------------------
     "ill-defined",
     "ill defined",
     "poorly defined",
     "poorly-defined",
+    "ill-circumscribed",
+    "ill circumscribed",
     "indistinct",
     "vague",
     "subtle",
     "faint",
     "hazy",
-    "barely visible",
     "blurred",
     "blurry",
     "fuzzy",
     "obscured",
-    "ill-circumscribed",
-    "ill circumscribed",
+    "barely visible",
 ]
+
 
 
 

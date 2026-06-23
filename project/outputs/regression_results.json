@@ -1,0 +1,11 @@
+{
+  "n": 5242,
+  "coef_is_uncertain": -0.009369177063153284,
+  "se_is_uncertain": 0.011850794207136469,
+  "t_is_uncertain": -0.7905948664192674,
+  "p_value_is_uncertain": 0.42918044348036677,
+  "coef_log_union_area": -0.0832015093552811,
+  "intercept": 1.3780253540805434,
+  "n_finding_categories": 144,
+  "interpretation": "Negative coef_is_uncertain means uncertain sentences have lower reader IoU after controlling for finding type and box area."
+}

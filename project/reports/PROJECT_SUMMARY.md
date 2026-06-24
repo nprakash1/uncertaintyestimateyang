@@ -84,15 +84,62 @@ Mask IoU is used rather than box IoU because a finding can have **multiple
 boxes per reader** (e.g. "scattered nodules"), and the union mask
 collapses those cleanly.
 
-### Step 4-5 — Group statistics + significance tests
-For each uncertainty label group we compute n, mean, median, std, 95 %
-bootstrap CI of the mean (10,000 resamples), then run:
+### Step 4-5 — Group statistics + significance test
+For each uncertainty label group we compute n, mean, median, and std,
+then run a single non-parametric test:
 
 - **Mann–Whitney U** (one-sided "certain > uncertain", and two-sided).
-- **Bootstrap of Δ = mean_iou(certain) − mean_iou(uncertain)** with 2,000
-  resamples and a 95 % CI.
-- **Permutation test** that shuffles the uncertainty labels 5,000 times
-  and recomputes Δ to get a non-parametric p-value.
+
+#### What the Mann–Whitney U test actually does
+
+Pool all 5,242 IoUs and rank them from smallest to largest. Then count:
+for each pair (one certain sentence × one uncertain sentence) — there
+are ~4,900 × ~400 ≈ 2,000,000 such pairs — does the certain one have a
+higher IoU than the uncertain one? Call that count **U**.
+
+If certain and uncertain truly had the same IoU distribution, **U**
+should land near the midpoint (half the pairs would go each way, by
+chance). If **U** is way above the midpoint, certain sentences are
+typically winning the head-to-head, and the test reports a small
+**p-value** for "this much winning by chance is implausible."
+
+#### Why this test specifically (and not a t-test)?
+
+It does **not** assume the IoU distribution is bell-shaped (it isn't —
+IoU is bounded in [0,1] and has a fat tail at 0 from "boxes completely
+missed each other"). It only assumes the values are ordered, so it's
+robust to the actual shape.
+
+#### One-sided vs two-sided
+
+- One-sided "certain > uncertain": "What's the chance certain IoUs
+  would dominate uncertain IoUs *this strongly* if there were no real
+  difference?" Use this when you have a directional hypothesis going in
+  — which we do.
+- Two-sided: "What's the chance the two distributions would differ
+  *this much in either direction*?" This is the conservative version.
+
+#### What we saw
+
+For the rule-based experiment:
+
+```
+U = 1,083,386
+p (one-sided, certain > uncertain) = 4.2 × 10⁻¹⁰
+p (two-sided)                      = 8.4 × 10⁻¹⁰
+```
+
+The one-sided p says: if certain and uncertain sentences had identical
+IoU distributions, we'd see a head-to-head win rate this lopsided about
+4 in 10 billion times. So **the two distributions are different and
+certain wins**.
+
+#### What it doesn't tell you
+
+The Mann-Whitney p only tells you *whether* the groups differ, not by
+how much. The size of the gap (Δ in mean IoU) is reported directly
+alongside the test as a descriptive number.
+
 
 ### Step 6 — Per-finding control + OLS regression
 Per-finding subgroup table includes any `finding_label` with at least 10
@@ -251,9 +298,8 @@ All three experiments analyse the **same** 5,242-sentence cohort.
 | median IoU certain                    | 0.531                     | 0.549                     | 0.533                     |
 | median IoU uncertain                  | 0.448                     | 0.423                     | 0.450                     |
 | **Δ = mean cert − mean unc**          | **+0.079**                | **+0.090**                | **+0.071**                |
-| 95 % bootstrap CI for Δ               | [0.053, 0.106]            | [0.075, 0.105]            | [0.050, 0.093]            |
 | Mann–Whitney U p (one-sided)          | 1.1 × 10⁻⁸                | 2.3 × 10⁻³¹               | 4.2 × 10⁻¹⁰               |
-| Permutation p (5,000 reps)            | ≈ 0.0002                  | ≈ 0.0002                  | ≈ 0.0002                  |
+| Mann–Whitney U p (two-sided)          | 2.3 × 10⁻⁸                | 4.6 × 10⁻³¹               | 8.4 × 10⁻¹⁰               |
 | Regression β on `is_uncertain` after controlling for **finding label + log box area** | −0.018  (p = 0.15) | −0.008  (p = 0.31) | −0.009  (p = 0.43) |
 | Trigger quality (manual review)       | mixed (diag + size hedges) | **noisy** — flags finding names / location / "at" | **clean** — every trigger is a real hedge |
 | Runtime / hardware                    | ~30 min on A100 80 GB     | ~30 min on A100 80 GB     | **~30 s on a laptop CPU** |
@@ -262,8 +308,9 @@ All three experiments analyse the **same** 5,242-sentence cohort.
 
 1. **All three classifiers agree on the marginal direction.** Uncertain
    sentences have lower reader IoU by **7–9 IoU points** (≈ 14–18 %
-   relative), and that gap is **strictly outside the bootstrap CI** and
-   has astronomically small Mann–Whitney p-values in every experiment.
+   relative), with astronomically small Mann–Whitney p-values in every
+   experiment.
+
 2. **All three classifiers also agree on the *adjusted* null.** Once we
    condition on which finding the sentence describes and how big the
    boxes are, the coefficient on `is_uncertain` shrinks to ~ −0.01 and
@@ -388,9 +435,10 @@ inter-reader disagreement are **correlated, not coextensive**.
 **The marginal hypothesis is supported, across three independent
 classifiers, with overwhelming statistical significance:** sentences
 labelled uncertain by either MedGemma or a 47-phrase dictionary show
-~ 7–9 IoU-point lower reader-vs-reader spatial agreement, every test
-gives p < 10⁻⁸, every bootstrap CI for Δ is strictly above zero, and
-every permutation test bottoms out at the smallest reachable p.
+~ 7–9 IoU-point lower reader-vs-reader spatial agreement, and the
+Mann–Whitney U test rejects "same distribution" with p < 10⁻⁸ in every
+experiment.
+
 
 **The strong hypothesis — "report-language uncertainty *independently*
 predicts spatial disagreement after controlling for what the finding

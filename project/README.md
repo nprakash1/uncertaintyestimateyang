@@ -200,3 +200,87 @@ project/
   next stage is to plug in BioViL-T + MedSAM to produce model
   segmentations and ask whether model uncertainty tracks the same
   human-disagreement signal.
+
+## Stage 2 — MedSAM 3 inference + multi-IoU eval
+
+Once the report-language signal is established, we evaluate **MedSAM 3**
+(LoRA fine-tune of `facebook/sam3`, repo `lal-Joey/MedSAM3_v1`) on the
+same PadChest-GR positive findings. The notebook
+`notebooks/medsam3_padchest_gr_colab.ipynb` does this end-to-end on Colab.
+
+### Setup (one-time)
+
+Dataset hosting: PadChest-GR is ~44 GB. We store it once in a GCS bucket
+in `us-central1` so Colab can stream images instead of copying them.
+
+```bash
+# (one-time) upload from local
+gsutil mb -l us-central1 -c STANDARD gs://yang-padchest-gr/
+gsutil -m rsync -r /path/to/padchest-gr/ gs://yang-padchest-gr/
+```
+
+The PadChest-GR archive is a **byte-split zip** (`PadChest_GR.zip.001..037`),
+not loose images. Cell 0 of the notebook concatenates + extracts the
+parts to `gs://yang-padchest-gr/images/` (idempotent — no-ops on re-run).
+
+### What the notebook does
+
+1. **Cell 0** — one-time extraction of the split-zip archive on Colab,
+   uploading loose PNGs back to `gs://${BUCKET}/images/`.
+2. **Cells 1–3** — install CUDA-12.6 PyTorch, clone MedSAM 3, auth to
+   GCS + HF, set config.
+3. **Cell 4** — load `samples_with_uncertainty_and_iou.csv` + merge
+   rule-based labels from `rule_uncertainty_scores.jsonl`. Build the
+   `medsam3_prompt` column by stripping every hedge in
+   `UNCERTAIN_TERMS` from the radiologist's sentence so MedSAM 3 sees
+   an unbiased prompt.
+4. **Cells 5–7** — GCS streaming image loader, MedSAM 3 LoRA load,
+   IoU helpers (mirror `src/compute_iou.py`).
+5. **Cell 8 — smoke test** (`SMOKE_N=50`, stratified 25/25). Runs
+   end-to-end on a tiny set and emits a 5×4 figure
+   `(image | GT boxes | predicted mask | overlay)` so you can sanity-check
+   the model + prompts before the long run.
+6. **Cell 9 — full run** over all ~5K samples. Resumable — each per-sample
+   IoU JSON + predicted mask `.npz` is written to GCS at
+   `gs://${BUCKET}/outputs/medsam3_v1/{sample_id}.json` and
+   `.../masks/{sample_id}.npz`; the loop skips any `sample_id` already
+   present so a session timeout doesn't lose work.
+7. **Cells 10–11** — aggregate per-sample IoUs stratified by the
+   rule-based `uncertainty_label`, with bootstrapped 95% CIs, plus three
+   plots (histogram, per-metric bar chart, agreement-vs-IoU scatter).
+8. **Cell 12** — copy final small artifacts (CSVs + JSON + PNGs) back
+   to the repo via Drive.
+
+### Multi-IoU per sample
+
+For each finding we compute and store every IoU variant in one bundle:
+
+| Field | Definition |
+|---|---|
+| `per_box_ious` | list — IoU(pred, box) for every GT box, both readers pooled |
+| `max_per_box_iou`, `mean_per_box_iou` | aggregates of the above |
+| `iou_with_pixel_or_union` | IoU(pred, pixel-OR of all GT boxes) — standard "union mask" |
+| `iou_with_outer_bbox_union` | IoU(pred, single tightest rectangle containing all GT boxes) |
+| `iou_with_intersection` | IoU(pred, pixel-AND of all GT boxes) |
+| `iou_with_reader1_union`, `iou_with_reader2_union` | per-reader unions |
+| `reader_iou_union` | reader1_union vs reader2_union — annotator agreement |
+| `pairwise_box_ious`, `mean_pairwise_iou` | IoU(box_i, box_j) for every pair across both readers — fine-grained agreement |
+| `pred_area`, `num_boxes_total`, `num_reader1_boxes`, `num_reader2_boxes` | bookkeeping |
+
+The IoU helpers live in `src/compute_iou.py`
+(`compute_pred_vs_gt_iou_bundle`) and are mirrored in the notebook for
+self-contained execution on Colab.
+
+### Outputs
+
+Per-sample (stay in GCS, not in git):
+* `gs://${BUCKET}/outputs/medsam3_v1/{sample_id}.json`
+* `gs://${BUCKET}/outputs/medsam3_v1/masks/{sample_id}.npz`
+
+Aggregated (copied back into the repo via Drive in Cell 12):
+* `outputs/medsam3_per_sample_ious.csv`
+* `outputs/medsam3_per_finding_ious.csv`
+* `outputs/medsam3_aggregate_ious.json`
+* `figures/medsam3_iou_histogram_by_group.png`
+* `figures/medsam3_iou_by_uncertainty_group.png`
+* `figures/medsam3_agreement_vs_iou_scatter.png`

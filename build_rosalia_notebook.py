@@ -901,7 +901,114 @@ print(" * If NOTHING fires on findings the readers boxed -> genuine MIMIC->PadCh
 print("   recall gap; that is itself a valid result to report, not a bug.")
 """))
 
+cells.append(md(r"""## Cell B6c — INSPECT raw mask logits / probabilities (pre-threshold)
+
+The binary mask used everywhere else comes from ONE hard cutoff inside
+`segment_image_rosalia`:
+
+```python
+mask = (pred_masks[0] > 0)      #  logit > 0   ==   sigmoid(logit) > 0.5
+```
+
+`pred_masks[0]` is SAM-H's **raw per-pixel logit map** (a float tensor at the
+original image resolution). Every pixel gets a continuous score; the mask is
+just the pixels whose score clears the threshold. This cell reruns a few
+examples but keeps those *pre-threshold* scores so we can see them: the sigmoid
+probability heatmap, min/max/mean logit, how many pixels beat the 0.5 cutoff,
+and the probability histogram with the threshold line. Handy for telling apart
+"almost fired" (peak prob just under 0.5) from "confidently absent" (all probs
+~0)."""))
+
+cells.append(code(r"""import numpy as np
+import matplotlib.pyplot as plt
+
+# segment_image_rosalia() thresholds pred_masks[0] > 0 to make the binary mask.
+# pred_masks[0] is SAM-H's RAW per-pixel LOGIT map. This variant returns that
+# float logit map (at original image size) instead of the binary mask so we can
+# inspect the pre-threshold scores. (logit > 0) == (sigmoid(logit) > 0.5).
+def segment_image_rosalia_logits(model, tokenizer, clip_processor, transform, pil_image, instruction):
+    image_np = np.array(pil_image)
+    if image_np.ndim == 2:
+        image_np = np.stack([image_np]*3, axis=-1)
+    elif image_np.shape[-1] == 4:
+        image_np = image_np[..., :3]
+    original_size_list = [image_np.shape[:2]]
+    conv = conversation_lib.conv_templates["llava_v1"].copy(); conv.messages = []
+    prompt = DEFAULT_IMAGE_TOKEN + "\n" + instruction
+    prompt = prompt.replace(DEFAULT_IMAGE_TOKEN,
+                            DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN)
+    conv.append_message(conv.roles[0], prompt); conv.append_message(conv.roles[1], "")
+    prompt = conv.get_prompt()
+    image_clip = (clip_processor.preprocess(image_np, return_tensors="pt")["pixel_values"][0]
+                  .unsqueeze(0).cuda().bfloat16())
+    image_resized = transform.apply_image(image_np)
+    resize_list = [image_resized.shape[:2]]
+    image = (_sam_preprocess(torch.from_numpy(image_resized).permute(2,0,1).contiguous())
+             .unsqueeze(0).cuda().bfloat16())
+    input_ids = tokenizer_image_token(prompt, tokenizer, return_tensors="pt").unsqueeze(0).cuda()
+    with torch.no_grad():
+        output_ids, pred_masks = model.evaluate(
+            image_clip, image, input_ids, resize_list, original_size_list,
+            max_new_tokens=256, tokenizer=tokenizer)
+    out_ids = output_ids[0][output_ids[0] != IMAGE_TOKEN_INDEX]
+    text_out = tokenizer.decode(out_ids, skip_special_tokens=False)
+    text_out = text_out.replace("\n","").replace("  "," ").split("ASSISTANT:")[-1].split("</s>")[0].strip()
+    if len(pred_masks) == 0 or pred_masks[0].numel() == 0:
+        logits = None
+    else:
+        lm = pred_masks[0]
+        if lm.ndim == 3: lm = lm[0]
+        logits = lm.float().detach().cpu().numpy()
+    return logits, text_out
+
+# pick a few rows with a specific parsed location (more likely to actually fire)
+N_EXAMPLES = 9
+_ex = samples[samples["rosalia_location"] != INSTRUCTION_DEFAULT_LOCATION].head(N_EXAMPLES)
+if len(_ex) < N_EXAMPLES:
+    _ex = samples.head(N_EXAMPLES)
+
+
+for row in _ex.itertuples():
+    img = load_image_gcs(row.image_id)
+    logits, text_out = segment_image_rosalia_logits(
+        model, tokenizer, clip_processor, transform, img, row.rosalia_instruction)
+    print("="*84)
+    print(f"{row.sample_id} | target={row.rosalia_target} | instr={row.rosalia_instruction!r}")
+    print(f"  text_output: {text_out!r}")
+    if logits is None:
+        print("  [no SEG mask returned - model emitted no [SEG] token, so there is no logit map]")
+        continue
+    probs   = 1.0 / (1.0 + np.exp(-logits))     # per-pixel P(lesion)
+    binmask = (logits > 0).astype(np.uint8)     # EXACT rule used elsewhere
+    print(f"  logit : min={logits.min():.2f}  max={logits.max():.2f}  mean={logits.mean():.3f}")
+    print(f"  prob  : min={probs.min():.3f}  max={probs.max():.3f}  mean={probs.mean():.3f}")
+    print(f"  pixels above threshold (logit>0 == prob>0.5): {int(binmask.sum())} "
+          f"({100*binmask.mean():.3f}% of image)")
+    print("  peak prob {:.3f} -> {}".format(
+        probs.max(),
+        "FIRES (a pixel clears 0.5)" if probs.max() > 0.5 else "does NOT fire (peak below 0.5)"))
+
+    fig, ax = plt.subplots(1, 4, figsize=(20, 5))
+    ax[0].imshow(img, cmap="gray"); ax[0].set_title("image"); ax[0].axis("off")
+    im1 = ax[1].imshow(probs, cmap="jet", vmin=0, vmax=1)
+    ax[1].set_title("P(lesion) = sigmoid(logit)"); ax[1].axis("off")
+    fig.colorbar(im1, ax=ax[1], fraction=0.046)
+    ax[2].imshow(img, cmap="gray")
+    ax[2].imshow(np.ma.masked_where(probs < 0.05, probs), cmap="jet", vmin=0, vmax=1, alpha=0.55)
+    ax[2].set_title("prob heatmap overlay"); ax[2].axis("off")
+    ax[3].imshow(binmask, cmap="gray")
+    ax[3].set_title(f"binary mask @0.5 ({int(binmask.sum())} px)"); ax[3].axis("off")
+    plt.tight_layout(); plt.show()
+
+    plt.figure(figsize=(7,3))
+    plt.hist(probs.ravel(), bins=60, color="tab:purple", alpha=0.85)
+    plt.axvline(0.5, color="red", ls="--", label="threshold 0.5")
+    plt.yscale("log"); plt.xlabel("per-pixel P(lesion)"); plt.ylabel("pixel count (log)")
+    plt.title(f"{row.sample_id}: probability distribution"); plt.legend(); plt.tight_layout(); plt.show()
+"""))
+
 cells.append(md(r"""## Cell B7 — IoU helpers (mirror project/src/compute_iou.py)"""))
+
 
 
 cells.append(code(r"""import numpy as np

@@ -79,17 +79,24 @@ negatives). Put the images/masks on Google Drive and set the paths in Cell S0.
 # =============================================================================
 # Cell S0 — shared config + data location
 # =============================================================================
-cells.append(md(r"""## Cell S0 — mount Drive, set data paths, fetch the manifest
+cells.append(md(r"""## Cell S0 — mount Drive + fetch the manifest
 
-Set `MIMIC_SUBSET_DIR` (the folder that directly contains `p10/ p11/ ...`) and
-`LESION_MASK_DIR` (the folder that directly contains `s.../` mask subfolders).
-The manifest is pulled from this repo; if that fails, drop it next to the data
-and point `SUBSET_MANIFEST` at it.
+Your data lives in a **Shared-with-me** Drive folder `MIMIC-CXR-Ext-ILS/` as two
+zips:
+* `mimic_subset.zip` (~1.14 GB) — the 700 MIMIC-CXR-JPG images (`pXX/...`).
+* `mimic-cxr-ext-ils.zip` (~231 MB) — the annotations incl. `lesion_mask/`.
+
+⚠️ **Shared-with-me folders don't auto-mount.** In Drive, right-click the
+`MIMIC-CXR-Ext-ILS` folder → **Organise → Add shortcut to Drive → My Drive**.
+After that it appears at `/content/drive/MyDrive/MIMIC-CXR-Ext-ILS/`.
+
+Phase A (MedGemma) only needs the manifest text, so we don't unzip here — the
+images/masks are extracted in **Phase B (Cell B3b)**. This cell just mounts
+Drive (for saving Phase-A labels) and downloads the manifest.
 """))
 
 cells.append(code(r"""import os
 
-# ---- EDIT THESE if your Drive layout differs -------------------------------
 try:
     from google.colab import drive
     drive.mount('/content/drive')
@@ -98,12 +105,12 @@ except Exception as e:
     print(f"[warn] Drive not mounted ({e}); using local paths.")
     DRIVE = False
 
-# Folder that directly contains p10/ p11/ ... (the MIMIC-CXR-JPG images)
-MIMIC_SUBSET_DIR = "/content/drive/MyDrive/mimic_subset"
-# Folder that directly contains sXXXXXXXX/ mask subfolders
-LESION_MASK_DIR  = "/content/drive/MyDrive/mimic-cxr-ext-ils/lesion_mask"
+# Shared-with-me folder (after you add a shortcut to My Drive). The two zips:
+DRIVE_DATA_DIR = "/content/drive/MyDrive/MIMIC-CXR-Ext-ILS"
+SUBSET_ZIP = os.path.join(DRIVE_DATA_DIR, "mimic_subset.zip")
+EXT_ZIP    = os.path.join(DRIVE_DATA_DIR, "mimic-cxr-ext-ils.zip")
 
-# Where to persist Phase-A outputs so they survive the restart
+# Persist Phase-A outputs so they survive the restart
 WORK_DIR = "/content/drive/MyDrive/mimic_ils_rosalia" if DRIVE else "/content/mimic_ils_rosalia"
 os.makedirs(WORK_DIR, exist_ok=True)
 UNC_LABELS_PATH = os.path.join(WORK_DIR, "medgemma_uncertainty_subset.json")
@@ -116,18 +123,18 @@ if not os.path.exists(SUBSET_MANIFEST):
     if rc != 0 or not os.path.exists(SUBSET_MANIFEST):
         print("[warn] could not fetch manifest from GitHub; place it at", SUBSET_MANIFEST)
 
-# quick sanity check
 import pandas as pd
 _m = pd.read_csv(SUBSET_MANIFEST)
 print("manifest rows:", len(_m), "| unique studies:", _m.study_id.nunique())
 print("positive pairs:", (_m.polarity=="positive").sum(),
       "| negative pairs:", (_m.polarity=="negative").sum())
 print("splits:", _m.split.value_counts().to_dict())
-_ex = _m.iloc[0]
-print("example image_path:", _ex.image_path)
-print("resolves to:", os.path.join(MIMIC_SUBSET_DIR, _ex.image_path),
-      "->", os.path.exists(os.path.join(MIMIC_SUBSET_DIR, _ex.image_path)))
+print("zips present? subset:", os.path.exists(SUBSET_ZIP), "| ext:", os.path.exists(EXT_ZIP))
+if not os.path.exists(SUBSET_ZIP):
+    print("[hint] add a shortcut to the shared 'MIMIC-CXR-Ext-ILS' folder into My Drive,",
+          "or edit DRIVE_DATA_DIR above.")
 """))
+
 
 # =============================================================================
 # PHASE A — MedGemma uncertainty labelling
@@ -295,17 +302,21 @@ cells.append(code(r"""from huggingface_hub import notebook_login
 notebook_login()
 """))
 
-cells.append(md(r"""## Cell B3 — config + re-declare data paths (post-restart)"""))
+cells.append(md(r"""## Cell B3 — config + re-declare paths (post-restart)"""))
 
 cells.append(code(r"""import os
-# Data paths (must match Cell S0; re-declared because the restart cleared state)
+# Re-declared because the restart cleared state (must match Cell S0).
 try:
     from google.colab import drive; drive.mount('/content/drive'); DRIVE=True
 except Exception as e:
     print("[warn]", e); DRIVE=False
-MIMIC_SUBSET_DIR = "/content/drive/MyDrive/mimic_subset"
-LESION_MASK_DIR  = "/content/drive/MyDrive/mimic-cxr-ext-ils/lesion_mask"
+
+DRIVE_DATA_DIR = "/content/drive/MyDrive/MIMIC-CXR-Ext-ILS"
+SUBSET_ZIP = os.path.join(DRIVE_DATA_DIR, "mimic_subset.zip")
+EXT_ZIP    = os.path.join(DRIVE_DATA_DIR, "mimic-cxr-ext-ils.zip")
+
 WORK_DIR = "/content/drive/MyDrive/mimic_ils_rosalia" if DRIVE else "/content/mimic_ils_rosalia"
+os.makedirs(WORK_DIR, exist_ok=True)
 UNC_LABELS_PATH = os.path.join(WORK_DIR, "medgemma_uncertainty_subset.json")
 REPO_RAW_URL = "https://raw.githubusercontent.com/nprakash1/uncertaintyestimateyang/rule-bag-of-words"
 SUBSET_MANIFEST = "/content/mimic_ils_subset_manifest.csv"
@@ -320,10 +331,63 @@ GRID = 512            # common grid for pred-vs-silver mask comparison
 MASK_BIN_THRESH = 127 # silver PNG is 0/255; >127 -> foreground
 LESIONS = ["cardiomegaly","pneumonia","atelectasis","opacity",
            "consolidation","edema","effusion"]
-print("Config loaded.")
+print("Config loaded. zips present? subset:", os.path.exists(SUBSET_ZIP),
+      "| ext:", os.path.exists(EXT_ZIP))
+"""))
+
+cells.append(md(r"""## Cell B3b — extract the zips to fast local disk + auto-detect roots
+
+Unzips `mimic_subset.zip` and `mimic-cxr-ext-ils.zip` to `/content` (fast local
+SSD — far quicker than reading 700 files over Drive during the run), then
+auto-detects `MIMIC_SUBSET_DIR` (the folder that contains `p10/ p11/ ...`) and
+`LESION_MASK_DIR` (the `lesion_mask/` folder) regardless of how the zips nest
+their contents. Re-running is cheap (skips extraction if already unzipped).
+"""))
+
+cells.append(code(r"""import os, re, zipfile, glob
+
+EXTRACT_ROOT = "/content/mimic_data"
+IMG_EXTRACT  = os.path.join(EXTRACT_ROOT, "images")
+EXT_EXTRACT  = os.path.join(EXTRACT_ROOT, "ext")
+
+def _unzip(zip_path, dest, marker_glob):
+    os.makedirs(dest, exist_ok=True)
+    if glob.glob(marker_glob, recursive=True):
+        print(f"[skip] already extracted -> {dest}")
+        return
+    assert os.path.exists(zip_path), f"missing zip: {zip_path} (add the shared folder shortcut to My Drive)"
+    print(f"unzipping {os.path.basename(zip_path)} -> {dest} ...")
+    with zipfile.ZipFile(zip_path) as z:
+        z.extractall(dest)
+    print("  done.")
+
+_unzip(SUBSET_ZIP, IMG_EXTRACT, os.path.join(IMG_EXTRACT, "**", "p1*"))
+_unzip(EXT_ZIP,    EXT_EXTRACT, os.path.join(EXT_EXTRACT, "**", "lesion_mask"))
+
+def find_image_root(base):
+    for root, dirs, _ in os.walk(base):
+        if any(re.fullmatch(r"p1\d", d) for d in dirs):
+            return root
+    raise RuntimeError(f"could not find p1x/ image folders under {base}")
+
+def find_mask_root(base):
+    for root, dirs, _ in os.walk(base):
+        if os.path.basename(root) == "lesion_mask":
+            return root
+        if "lesion_mask" in dirs:
+            return os.path.join(root, "lesion_mask")
+    raise RuntimeError(f"could not find lesion_mask/ under {base}")
+
+MIMIC_SUBSET_DIR = find_image_root(IMG_EXTRACT)
+LESION_MASK_DIR  = find_mask_root(EXT_EXTRACT)
+print("MIMIC_SUBSET_DIR =", MIMIC_SUBSET_DIR)
+print("LESION_MASK_DIR  =", LESION_MASK_DIR)
+print("  #patient dirs :", len([d for d in os.listdir(MIMIC_SUBSET_DIR) if re.fullmatch(r'p1\d', d)]))
+print("  #mask studies :", len(os.listdir(LESION_MASK_DIR)))
 """))
 
 cells.append(md(r"""## Cell B4 — load manifest + MedGemma labels; local image & mask loaders
+
 
 The MIMIC-CXR-JPG images are already 8-bit, so (unlike the PadChest notebook)
 we do **no percentile windowing** — we load the JPG straight to RGB. Silver

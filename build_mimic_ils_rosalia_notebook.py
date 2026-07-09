@@ -735,7 +735,8 @@ P = results[results.polarity=="positive"].dropna(subset=["iou"])
 # per-lesion gIoU bar
 fig, ax = plt.subplots(figsize=(9,4))
 g = P.groupby("target")["iou"].mean().sort_values(ascending=False)
-g.plot(kind="bar", ax=ax, color="tab:teal")
+g.plot(kind="bar", ax=ax, color="teal")
+
 ax.set_ylabel("gIoU (mean IoU vs silver)"); ax.set_title("ROSALIA on MIMIC-ILS subset: gIoU by lesion")
 plt.tight_layout(); plt.savefig(os.path.join(WORK_DIR,"giou_by_lesion.png"), dpi=120); plt.show()
 

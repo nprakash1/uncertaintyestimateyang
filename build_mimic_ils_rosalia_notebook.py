@@ -569,8 +569,31 @@ def iou_dice(pred, gt, grid=GRID):
     iou = inter/union if union > 0 else float("nan")
     dice = (2*inter)/(psum+gsum) if (psum+gsum) > 0 else float("nan")
     return iou, dice, inter, union
+
+def _sigmoid(x): return 1.0/(1.0+np.exp(-np.asarray(x, dtype=np.float64)))
+
+def logit_stats(logits, gt=None):
+    # Per-example confidence summaries from ROSALIA's raw mask logits:
+    #   max_prob        = peak sigmoid prob anywhere (did the model 'fire' hard?)
+    #   mean_prob       = mean sigmoid prob over the whole map
+    #   mean_prob_in_gt = mean sigmoid prob inside the silver-mask region
+    if logits is None:
+
+        return dict(max_logit=np.nan, max_prob=np.nan, mean_prob=np.nan, mean_prob_in_gt=np.nan)
+    p = _sigmoid(logits)
+    out = dict(max_logit=float(np.max(logits)), max_prob=float(p.max()),
+               mean_prob=float(p.mean()), mean_prob_in_gt=float("nan"))
+    if gt is not None and np.asarray(gt).sum() > 0:
+        g = _skresize(np.asarray(gt).astype(np.float32), p.shape, order=0,
+                      mode="edge", anti_aliasing=False, preserve_range=True) > 0.5
+        if g.sum() > 0:
+            out["mean_prob_in_gt"] = float(p[g].mean())
+    return out
+
 print("metrics ready. gIoU=mean per-sample IoU; cIoU=sum(inter)/sum(union).")
+print("logit_stats -> max_prob, mean_prob, mean_prob_in_gt per example.")
 """))
+
 
 cells.append(md(r"""## Cell B7 — SMOKE test: 6 positives with silver-mask overlay"""))
 
@@ -629,7 +652,9 @@ for row in tqdm(pos.itertuples(), total=len(pos), desc="positives"):
             "polarity":"positive","target":row.target,"location":row.location,
             "instruction":row.instruction,"uncertainty_label":row.uncertainty_label,
             "text_output":txt,"pred_px":int(pred.sum()),"gt_px":int(gt.sum()),
-            "inter":inter,"union":union,"iou":iou,"dice":dice,"fired":int(pred.sum()>0)})
+            "inter":inter,"union":union,"iou":iou,"dice":dice,"fired":int(pred.sum()>0),
+            **logit_stats(logits, gt)})
+
     except Exception as e:
         print(f"[skip] {row.pair_id}: {type(e).__name__}: {e}")
 
@@ -724,7 +749,130 @@ ax.set_title("ROSALIA IoU by MedGemma report-language uncertainty"); ax.legend()
 plt.tight_layout(); plt.savefig(os.path.join(WORK_DIR,"iou_by_uncertainty.png"), dpi=120); plt.show()
 """))
 
+cells.append(md(r"""## Cell B10b — probability heat-map overlays: 10 uncertain + 10 certain
+
+Re-runs ROSALIA on 10 uncertain and 10 certain positive findings and overlays
+the **per-pixel sigmoid probability** map (jet) on the image, with the silver
+mask outline (green). This is the same logit/probability visualization as
+before, now split by MedGemma report-language uncertainty. If the hypothesis
+holds, uncertain findings should show cooler / more diffuse probability maps.
+"""))
+
+cells.append(code(r"""import matplotlib.pyplot as plt, numpy as np, os
+from matplotlib import cm
+
+def _contour(ax, mask, color):
+    try:
+        ax.contour(mask.astype(float), levels=[0.5], colors=[color], linewidths=1.4)
+    except Exception:
+        pass
+
+def plot_heatmaps(df_sel, title, fname):
+    n = len(df_sel)
+    if n == 0:
+        print("no examples for", title); return
+    cols = 5; rows = int(np.ceil(n/cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(4*cols, 4*rows))
+    axes = np.atleast_1d(axes).ravel()
+    for k, row in enumerate(df_sel.itertuples()):
+        ax = axes[k]
+        img = load_image(row.image_path); gt = load_silver_mask(row.seg_mask_path)
+        pred, logits, txt = segment(img, row.instruction)
+        ax.imshow(img, cmap="gray")
+        if logits is not None:
+            prob = _sigmoid(logits)
+            prob_r = _skresize(prob, np.array(img).shape[:2], order=1,
+                               mode="edge", anti_aliasing=True, preserve_range=True)
+            im = ax.imshow(prob_r, cmap="jet", alpha=0.45, vmin=0, vmax=1)
+            mp = float(prob.max())
+        else:
+            mp = float("nan")
+        gt_r = _skresize(gt.astype(float), np.array(img).shape[:2], order=0,
+                         mode="edge", anti_aliasing=False, preserve_range=True)
+        _contour(ax, gt_r, "lime")
+        iou, dice, *_ = iou_dice(pred, gt)
+        ax.set_title(f"{row.target} | IoU={iou:.2f}\nmax_p={mp:.2f}", fontsize=9)
+        ax.axis("off")
+    for k in range(n, len(axes)): axes[k].axis("off")
+    fig.suptitle(title, fontsize=13)
+    fig.subplots_adjust(right=0.9); cbar_ax = fig.add_axes([0.92,0.15,0.015,0.7])
+    fig.colorbar(cm.ScalarMappable(cmap="jet"), cax=cbar_ax, label="sigmoid prob")
+    plt.savefig(os.path.join(WORK_DIR, fname), dpi=110, bbox_inches="tight"); plt.show()
+
+# prefer examples where the model actually produced a mask, for legible heatmaps
+_pos_fire = pos.copy()
+if os.path.exists(RESULTS_CSV):
+    _fired = pd.read_csv(RESULTS_CSV)
+    _fired = set(_fired[(_fired.polarity=="positive") & (_fired.fired==1)]["pair_id"])
+    _pref = pos[pos.pair_id.isin(_fired)]
+    if len(_pref) >= 10: _pos_fire = _pref
+
+sel_unc = _pos_fire[_pos_fire.uncertainty_label=="uncertain"].head(10)
+sel_cer = _pos_fire[_pos_fire.uncertainty_label=="certain"].head(10)
+plot_heatmaps(sel_unc, "UNCERTAIN findings — ROSALIA probability heat-map", "heatmaps_uncertain.png")
+plot_heatmaps(sel_cer, "CERTAIN findings — ROSALIA probability heat-map",   "heatmaps_certain.png")
+"""))
+
+cells.append(md(r"""## Cell B10c — subset-wide probability distributions + significance test
+
+Over **all** scored positives, plot the distribution of ROSALIA's confidence
+(`max_prob` = peak sigmoid probability, and `mean_prob_in_gt` = mean probability
+inside the silver mask) separately for **certain** vs **uncertain** findings,
+then run a one-sided **Mann–Whitney U** test of the hypothesis
+*uncertain < certain* (non-parametric; also report Cohen's d and medians).
+"""))
+
+cells.append(code(r"""import numpy as np, pandas as pd, os
+import matplotlib.pyplot as plt
+from scipy.stats import mannwhitneyu
+
+results = pd.read_csv(RESULTS_CSV)
+P = results[results.polarity=="positive"].copy()
+
+def cohens_d(a, b):
+    a, b = np.asarray(a), np.asarray(b)
+    na, nb = len(a), len(b)
+    if na < 2 or nb < 2: return float("nan")
+    sp = np.sqrt(((na-1)*a.std(ddof=1)**2 + (nb-1)*b.std(ddof=1)**2)/(na+nb-2))
+    return (a.mean()-b.mean())/sp if sp > 0 else float("nan")
+
+METRICS = [("max_prob", "peak sigmoid probability"),
+           ("mean_prob_in_gt", "mean prob inside silver mask")]
+
+fig, axes = plt.subplots(1, len(METRICS), figsize=(7*len(METRICS), 4.5))
+axes = np.atleast_1d(axes)
+for ax, (metric, nice) in zip(axes, METRICS):
+    cer = P[P.uncertainty_label=="certain"][metric].dropna().values
+    unc = P[P.uncertainty_label=="uncertain"][metric].dropna().values
+    bins = np.linspace(0, 1, 31)
+    ax.hist(cer, bins=bins, alpha=0.55, density=True, color="tab:blue",
+            label=f"certain (n={len(cer)}, med={np.median(cer):.2f})")
+    ax.hist(unc, bins=bins, alpha=0.55, density=True, color="tab:orange",
+            label=f"uncertain (n={len(unc)}, med={np.median(unc):.2f})")
+    ax.axvline(np.median(cer), color="tab:blue", ls="--"); ax.axvline(np.median(unc), color="tab:orange", ls="--")
+    if len(cer) >= 3 and len(unc) >= 3:
+        U, p = mannwhitneyu(unc, cer, alternative="less")   # H1: uncertain < certain
+        d = cohens_d(unc, cer)
+        ax.set_title(f"{nice}\nMann-Whitney U (uncertain<certain): p={p:.3g}, d={d:.2f}")
+        print(f"[{metric}] certain med={np.median(cer):.3f} mean={cer.mean():.3f} | "
+              f"uncertain med={np.median(unc):.3f} mean={unc.mean():.3f} | "
+              f"U={U:.0f} p(one-sided uncertain<certain)={p:.3g} Cohen_d={d:.3f}")
+    else:
+        ax.set_title(f"{nice}\n(insufficient n for test)")
+    ax.set_xlabel(metric); ax.set_ylabel("density"); ax.legend(fontsize=8)
+plt.tight_layout(); plt.savefig(os.path.join(WORK_DIR,"prob_dist_by_uncertainty.png"), dpi=120); plt.show()
+
+# box/strip summary for the primary metric
+fig, ax = plt.subplots(figsize=(5,4))
+data = [P[P.uncertainty_label=="certain"]["max_prob"].dropna(),
+        P[P.uncertainty_label=="uncertain"]["max_prob"].dropna()]
+ax.boxplot(data, labels=["certain","uncertain"], showmeans=True)
+ax.set_ylabel("max_prob (peak sigmoid)"); ax.set_title("ROSALIA peak confidence by uncertainty")
+plt.tight_layout(); plt.savefig(os.path.join(WORK_DIR,"maxprob_box.png"), dpi=120); plt.show()
+"""))
+
 cells.append(md(r"""## Cell B11 — notes on reproduction
+
 
 * **gIoU / cIoU** are the LISA-family metrics; **Dice** is included for
   comparability with segmentation papers. Compare the per-lesion gIoU here to

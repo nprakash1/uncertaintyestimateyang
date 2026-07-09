@@ -748,7 +748,25 @@ for lab, c in [("certain","tab:blue"),("uncertain","tab:orange"),("unknown","gra
 ax.set_xlabel("IoU vs silver mask"); ax.set_ylabel("count")
 ax.set_title("ROSALIA IoU by MedGemma report-language uncertainty"); ax.legend()
 plt.tight_layout(); plt.savefig(os.path.join(WORK_DIR,"iou_by_uncertainty.png"), dpi=120); plt.show()
+
+# certain vs uncertain COUNT per lesion (grouped bar)
+Pall = results[results.polarity=="positive"].copy()
+ct = (Pall.groupby(["target","uncertainty_label"]).size()
+          .unstack(fill_value=0).reindex(LESIONS, fill_value=0))
+for lab in ["certain","uncertain"]:
+    if lab not in ct.columns: ct[lab] = 0
+labels = list(ct.index); x = np.arange(len(labels)); w = 0.38
+fig, ax = plt.subplots(figsize=(11,4.5))
+b1 = ax.bar(x - w/2, ct["certain"],   w, label="certain",   color="tab:blue")
+b2 = ax.bar(x + w/2, ct["uncertain"], w, label="uncertain", color="tab:orange")
+ax.bar_label(b1, fontsize=8); ax.bar_label(b2, fontsize=8)
+ax.set_xticks(x); ax.set_xticklabels(labels, rotation=25, ha="right")
+ax.set_ylabel("# positive findings"); ax.legend()
+ax.set_title("MedGemma report-language uncertainty per lesion (certain vs uncertain counts)")
+plt.tight_layout(); plt.savefig(os.path.join(WORK_DIR,"uncertainty_counts_by_lesion.png"), dpi=120); plt.show()
+print(ct[["certain","uncertain"]].to_string())
 """))
+
 
 cells.append(md(r"""## Cell B10b — probability heat-map overlays: 10 uncertain + 10 certain
 

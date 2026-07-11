@@ -107,7 +107,9 @@ except Exception as e:
 
 # Shared-with-me folder (after you add a shortcut to My Drive). The two zips:
 DRIVE_DATA_DIR = "/content/drive/MyDrive/MIMIC-CXR-Ext-ILS"
-SUBSET_ZIP = os.path.join(DRIVE_DATA_DIR, "mimic_subset.zip")
+# NOTE: "mimic_subset (1).zip" (3.96 GB) contains the full TEST-split images;
+#       the older "mimic_subset.zip" (1.14 GB) is just the smoke subset.
+SUBSET_ZIP = os.path.join(DRIVE_DATA_DIR, "mimic_subset (1).zip")
 EXT_ZIP    = os.path.join(DRIVE_DATA_DIR, "mimic-cxr-ext-ils.zip")
 
 # Persist Phase-A outputs so they survive the restart
@@ -117,11 +119,18 @@ UNC_LABELS_PATH = os.path.join(WORK_DIR, "medgemma_uncertainty_subset.json")
 
 # Manifest: pulled from the repo (small, 2.6 MB). Fallback: local copy.
 REPO_RAW_URL = "https://raw.githubusercontent.com/nprakash1/uncertaintyestimateyang/rule-bag-of-words"
-SUBSET_MANIFEST = "/content/mimic_ils_subset_manifest.csv"
+
+# ---- which manifest to run -------------------------------------------------
+# "subset" = original smoke subset;  "test" = full held-out TEST split (2,445 imgs)
+MANIFEST_CHOICE = "test"          # "subset" | "test"
+_MANIFEST_FILE = {"subset": "mimic_ils_subset_manifest.csv",
+                  "test":   "mimic_ils_test_manifest.csv"}[MANIFEST_CHOICE]
+SUBSET_MANIFEST = f"/content/{_MANIFEST_FILE}"
 if not os.path.exists(SUBSET_MANIFEST):
-    rc = os.system(f"curl -fsSL '{REPO_RAW_URL}/project/data/mimic_ils/mimic_ils_subset_manifest.csv' -o '{SUBSET_MANIFEST}'")
+    rc = os.system(f"curl -fsSL '{REPO_RAW_URL}/project/data/mimic_ils/{_MANIFEST_FILE}' -o '{SUBSET_MANIFEST}'")
     if rc != 0 or not os.path.exists(SUBSET_MANIFEST):
-        print("[warn] could not fetch manifest from GitHub; place it at", SUBSET_MANIFEST)
+        print("[warn] could not fetch manifest from GitHub; upload it to", SUBSET_MANIFEST)
+print(f"[config] MANIFEST_CHOICE={MANIFEST_CHOICE} -> {SUBSET_MANIFEST}")
 
 import pandas as pd
 _m = pd.read_csv(SUBSET_MANIFEST)
@@ -312,16 +321,27 @@ except Exception as e:
     print("[warn]", e); DRIVE=False
 
 DRIVE_DATA_DIR = "/content/drive/MyDrive/MIMIC-CXR-Ext-ILS"
-SUBSET_ZIP = os.path.join(DRIVE_DATA_DIR, "mimic_subset.zip")
+# "mimic_subset (1).zip" (3.96 GB) = full TEST-split images (use for MANIFEST_CHOICE="test")
+SUBSET_ZIP = os.path.join(DRIVE_DATA_DIR, "mimic_subset (1).zip")
 EXT_ZIP    = os.path.join(DRIVE_DATA_DIR, "mimic-cxr-ext-ils.zip")
 
 WORK_DIR = "/content/drive/MyDrive/mimic_ils_rosalia" if DRIVE else "/content/mimic_ils_rosalia"
 os.makedirs(WORK_DIR, exist_ok=True)
 UNC_LABELS_PATH = os.path.join(WORK_DIR, "medgemma_uncertainty_subset.json")
 REPO_RAW_URL = "https://raw.githubusercontent.com/nprakash1/uncertaintyestimateyang/rule-bag-of-words"
-SUBSET_MANIFEST = "/content/mimic_ils_subset_manifest.csv"
+
+# ---- which manifest to run (MUST match Cell S0) ----------------------------
+# "subset" = original smoke subset;  "test" = full held-out TEST split (2,445 imgs)
+MANIFEST_CHOICE = "test"          # "subset" | "test"
+# Skip negatives -> ~halve inference. The IoU regression only needs positives;
+# set False if you also want the abstention / negative analysis.
+POSITIVES_ONLY  = True
+_MANIFEST_FILE = {"subset": "mimic_ils_subset_manifest.csv",
+                  "test":   "mimic_ils_test_manifest.csv"}[MANIFEST_CHOICE]
+SUBSET_MANIFEST = f"/content/{_MANIFEST_FILE}"
 if not os.path.exists(SUBSET_MANIFEST):
-    os.system(f"curl -fsSL '{REPO_RAW_URL}/project/data/mimic_ils/mimic_ils_subset_manifest.csv' -o '{SUBSET_MANIFEST}'")
+    os.system(f"curl -fsSL '{REPO_RAW_URL}/project/data/mimic_ils/{_MANIFEST_FILE}' -o '{SUBSET_MANIFEST}'")
+print(f"[config] MANIFEST_CHOICE={MANIFEST_CHOICE} -> {SUBSET_MANIFEST} | POSITIVES_ONLY={POSITIVES_ONLY}")
 
 ROSALIA_REPO      = "checkone/ROSALIA-7B-v1"
 LISA_TOKENIZER    = "xinlai/LISA-7B-v1"
@@ -641,6 +661,14 @@ def append_row(rec):
     df = pd.DataFrame([rec])
     df.to_csv(RESULTS_CSV, mode="a", header=not os.path.exists(RESULTS_CSV), index=False)
 
+# ---- image-availability check (test manifest may reference images not in the
+#      extracted subset zip; missing ones are reported here, then skipped below) ----
+_avail = pos["image_path"].map(lambda p: os.path.exists(os.path.join(MIMIC_SUBSET_DIR, p)))
+print(f"[check] positive images present locally: {int(_avail.sum())}/{len(pos)}")
+if _avail.sum() < len(pos):
+    print(f"[warn] {int((~_avail).sum())} positive images are NOT on local disk and will be skipped.")
+    print("       For the full TEST split you need those images extracted (see the 500GB/GCS note).")
+
 # ---- positives: IoU/Dice vs silver mask ----
 for row in tqdm(pos.itertuples(), total=len(pos), desc="positives"):
     if row.pair_id in done: continue
@@ -658,21 +686,24 @@ for row in tqdm(pos.itertuples(), total=len(pos), desc="positives"):
     except Exception as e:
         print(f"[skip] {row.pair_id}: {type(e).__name__}: {e}")
 
-# ---- negatives: should abstain (empty mask). Sample to keep runtime sane ----
-neg_eval = neg.sample(n=min(len(neg), len(pos)), random_state=42)
-for row in tqdm(neg_eval.itertuples(), total=len(neg_eval), desc="negatives"):
-    if row.pair_id in done: continue
-    try:
-        img = load_image(row.image_path)
-        pred, logits, txt = segment(img, row.instruction)
-        append_row({"pair_id":row.pair_id,"study_id":row.study_id,"split":row.split,
-            "polarity":"negative","target":row.target,"location":row.location,
-            "instruction":row.instruction,"uncertainty_label":row.uncertainty_label,
-            "text_output":txt,"pred_px":int(pred.sum()),"gt_px":0,
-            "inter":0,"union":int(pred.sum()),"iou":float("nan"),"dice":float("nan"),
-            "fired":int(pred.sum()>0)})
-    except Exception as e:
-        print(f"[skip] {row.pair_id}: {type(e).__name__}: {e}")
+# ---- negatives: should abstain (empty mask). Skipped when POSITIVES_ONLY. ----
+if not POSITIVES_ONLY:
+    neg_eval = neg.sample(n=min(len(neg), len(pos)), random_state=42)
+    for row in tqdm(neg_eval.itertuples(), total=len(neg_eval), desc="negatives"):
+        if row.pair_id in done: continue
+        try:
+            img = load_image(row.image_path)
+            pred, logits, txt = segment(img, row.instruction)
+            append_row({"pair_id":row.pair_id,"study_id":row.study_id,"split":row.split,
+                "polarity":"negative","target":row.target,"location":row.location,
+                "instruction":row.instruction,"uncertainty_label":row.uncertainty_label,
+                "text_output":txt,"pred_px":int(pred.sum()),"gt_px":0,
+                "inter":0,"union":int(pred.sum()),"iou":float("nan"),"dice":float("nan"),
+                "fired":int(pred.sum()>0)})
+        except Exception as e:
+            print(f"[skip] {row.pair_id}: {type(e).__name__}: {e}")
+else:
+    print("[info] POSITIVES_ONLY=True -> skipping negatives (no abstention analysis).")
 
 results = pd.read_csv(RESULTS_CSV)
 print(f"\nDone. total scored rows: {len(results)}")

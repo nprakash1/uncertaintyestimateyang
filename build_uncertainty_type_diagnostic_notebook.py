@@ -47,6 +47,7 @@ For every **positive** finding in the MIMIC-ILS **test** split, this notebook as
 | **presence** | unsure it EXISTS / is visible | "possible pneumonia", "cannot exclude effusion" |
 | **spatial** | unsure of LOCATION / EXTENT / BOUNDARY | "ill-defined opacity", "indistinct margins" |
 | **diagnostic** | unsure WHAT it is (differential) | "atelectasis versus consolidation" |
+| **borderline** | ambiguous / only weakly hedged — unclear whether it is certain or one of the uncertain types | "trace effusion, if any", "subtle, likely minimal opacity" |
 
 It then **prints several worked examples per category** — the finding, the exact
 report sentence, the assigned label, and MedGemma's one-line reason — so you can
@@ -168,7 +169,7 @@ if getattr(tok, "pad_token", None) is None and getattr(tok, "eos_token", None):
 model = AutoModelForImageTextToText.from_pretrained(
     MODEL_NAME, torch_dtype=torch.bfloat16, device_map="auto").eval()
 
-LABELS = ["certain", "presence", "spatial", "diagnostic"]
+LABELS = ["certain", "presence", "spatial", "diagnostic", "borderline"]
 
 DEFINITIONS = (
     "Definitions of the uncertainty TYPE for a specific finding:\n"
@@ -179,6 +180,9 @@ DEFINITIONS = (
     "(ill-defined, poorly marginated, indistinct margins, hazy, extent/size uncertain).\n"
     "- diagnostic: the finding is seen but its IDENTITY is a differential between entities "
     "(X versus Y, could represent X or Y, may reflect atelectasis or consolidation).\n"
+    "- borderline: AMBIGUOUS or only weakly hedged, so you cannot confidently decide "
+    "between certain and one of the uncertain types (trace/tiny/subtle/minimal 'if any', "
+    "very mild qualifiers, mixed or conflicting cues). Use this when it is a genuine toss-up.\n"
 )
 
 FEWSHOT = (
@@ -191,17 +195,24 @@ FEWSHOT = (
     "Finding: consolidation | Report: 'Hazy airspace opacity of indistinct extent.' -> LABEL: spatial; WHY: extent unclear.\n"
     "Finding: atelectasis | Report: 'Opacity may reflect atelectasis versus consolidation.' -> LABEL: diagnostic; WHY: differential.\n"
     "Finding: opacity | Report: 'Could represent aspiration or early pneumonia.' -> LABEL: diagnostic; WHY: competing diagnoses.\n"
+    "Finding: effusion | Report: 'Trace pleural effusion, if any.' -> LABEL: borderline; WHY: 'if any' weakly hedges a stated finding, unclear if certain or presence.\n"
+    "Finding: atelectasis | Report: 'Subtle bibasilar opacity, likely minimal atelectasis.' -> LABEL: borderline; WHY: mild/subtle qualifiers make certain-vs-uncertain a toss-up.\n"
 )
 
 HEDGE = re.compile(r"possib|probab|question|cannot exclude|can't exclude|suggest|may |might|likely|"
                    r"versus| vs |could (represent|reflect|be)|ill-?defin|indistinct|poorly (defin|margin)|"
                    r"hazy|suspicious|concern for|worrisome|equivocal|uncertain", re.I)
+# soft cues that make a call ambiguous rather than clearly certain/uncertain
+BORDERLINE_CUE = re.compile(r"if any|trace|tiny|minimal|subtle|borderline|mild(ly)?|slight|"
+                            r"question of|equivocal|grossly|not significantly changed", re.I)
 
 def build_prompt(target, report_snip):
     return (
         "You classify the TYPE of uncertainty in a radiology report about ONE finding.\n"
         f"{DEFINITIONS}\n{FEWSHOT}\n"
-        "Now classify this one. Answer EXACTLY as 'LABEL: <certain|presence|spatial|diagnostic>; WHY: <short reason>'.\n"
+        "Now classify this one. If it is a genuine toss-up between certain and an uncertain "
+        "type, use 'borderline'. Answer EXACTLY as "
+        "'LABEL: <certain|presence|spatial|diagnostic|borderline>; WHY: <short reason>'.\n"
         f"Finding: {target} | Report: '{str(report_snip)[:700]}' ->"
     )
 
@@ -213,16 +224,27 @@ def classify(target, report_snip):
     with torch.no_grad():
         out = model.generate(**enc, max_new_tokens=40, do_sample=False, pad_token_id=tok.pad_token_id)
     raw = tok.batch_decode(out[:, enc["input_ids"].shape[1]:], skip_special_tokens=True)[0].strip()
-    m = re.search(r"LABEL:\s*(certain|presence|spatial|diagnostic)", raw, re.I)
+    m = re.search(r"LABEL:\s*(certain|presence|spatial|diagnostic|borderline)", raw, re.I)
     label = m.group(1).lower() if m else None
     w = re.search(r"WHY:\s*(.+)", raw, re.I)
     why = w.group(1).strip()[:160] if w else raw[:160]
-    # guardrail: if model says uncertain-type but there is literally no hedge word, call it certain
-    if label in {"presence","spatial","diagnostic"} and not HEDGE.search(str(report_snip)):
-        label, why = "certain", "(no hedge words found) " + why
+    snip = str(report_snip)
+    # guardrail: an uncertain-type call with NO hedge word but a soft cue -> borderline;
+    #            with neither hedge nor cue -> certain.
+    if label in {"presence","spatial","diagnostic"} and not HEDGE.search(snip):
+        if BORDERLINE_CUE.search(snip):
+            label, why = "borderline", "(no explicit hedge, soft cue) " + why
+        else:
+            label, why = "certain", "(no hedge words found) " + why
     if label is None:
-        label = "presence" if HEDGE.search(str(report_snip)) else "certain"
+        if HEDGE.search(snip):
+            label = "presence"
+        elif BORDERLINE_CUE.search(snip):
+            label = "borderline"
+        else:
+            label = "certain"
     return label, why, raw
+
 
 # smoke test on 3 rows
 for r in uniq.head(3).itertuples():
@@ -275,8 +297,9 @@ types = pd.read_csv(TYPES_CSV)
 
 N_EXAMPLES = 8   # <-- bump this to inspect more per category
 
-for lab in ["certain","presence","spatial","diagnostic"]:
+for lab in ["certain","presence","spatial","diagnostic","borderline"]:
     sub = types[types.unc_type == lab]
+
     print("\n" + "="*100)
     print(f"  {lab.upper()}   (n={len(sub)} of {len(types)})")
     print("="*100)
@@ -290,9 +313,10 @@ cells.append(md(r"""## Cell 8 — counts, per-lesion breakdown, and a plot"""))
 
 cells.append(code(r"""import pandas as pd, numpy as np, matplotlib.pyplot as plt, os
 types = pd.read_csv(TYPES_CSV)
-ORDER = ["certain","presence","spatial","diagnostic"]
+ORDER = ["certain","presence","spatial","diagnostic","borderline"]
 
 print("overall counts:")
+
 print(types["unc_type"].value_counts().reindex(ORDER, fill_value=0).to_string())
 
 print("\nuncertainty TYPE x lesion (counts):")
@@ -301,7 +325,9 @@ print(ct.to_string())
 
 # stacked bar per lesion
 fig, ax = plt.subplots(figsize=(11,5))
-colors = {"certain":"tab:blue","presence":"tab:orange","spatial":"tab:green","diagnostic":"tab:red"}
+colors = {"certain":"tab:blue","presence":"tab:orange","spatial":"tab:green",
+          "diagnostic":"tab:red","borderline":"tab:purple"}
+
 bottom = np.zeros(len(ct))
 for lab in ORDER:
     ax.bar(ct.index, ct[lab].values, bottom=bottom, label=lab, color=colors[lab])

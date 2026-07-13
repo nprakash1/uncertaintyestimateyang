@@ -105,12 +105,13 @@ except Exception as e:
     print(f"[warn] Drive not mounted ({e}); using local paths.")
     DRIVE = False
 
-# Shared-with-me folder (after you add a shortcut to My Drive). The two zips:
+# Shared-with-me folder (after you add a shortcut to My Drive). Image zips:
 DRIVE_DATA_DIR = "/content/drive/MyDrive/MIMIC-CXR-Ext-ILS"
-# NOTE: "mimic_subset (1).zip" (3.96 GB) contains the full TEST-split images;
-#       the older "mimic_subset.zip" (1.14 GB) is just the smoke subset.
-SUBSET_ZIP = os.path.join(DRIVE_DATA_DIR, "mimic_subset (1).zip")
+# NOTE: "mimic_subset (1).zip" (3.96 GB) = full TEST-split images;
+#       "mimic_val_subset.zip"           = full VAL-split images;
+#       "mimic_subset.zip"  (1.14 GB)    = old smoke subset.
 EXT_ZIP    = os.path.join(DRIVE_DATA_DIR, "mimic-cxr-ext-ils.zip")
+
 
 # Persist Phase-A outputs so they survive the restart
 WORK_DIR = "/content/drive/MyDrive/mimic_ils_rosalia" if DRIVE else "/content/mimic_ils_rosalia"
@@ -120,29 +121,48 @@ UNC_LABELS_PATH = os.path.join(WORK_DIR, "medgemma_uncertainty_subset.json")
 # Manifest: pulled from the repo (small, 2.6 MB). Fallback: local copy.
 REPO_RAW_URL = "https://raw.githubusercontent.com/nprakash1/uncertaintyestimateyang/rule-bag-of-words"
 
-# ---- which manifest to run -------------------------------------------------
-# "subset" = original smoke subset;  "test" = full held-out TEST split (2,445 imgs)
-MANIFEST_CHOICE = "test"          # "subset" | "test"
-_MANIFEST_FILE = {"subset": "mimic_ils_subset_manifest.csv",
-                  "test":   "mimic_ils_test_manifest.csv"}[MANIFEST_CHOICE]
-SUBSET_MANIFEST = f"/content/{_MANIFEST_FILE}"
-if not os.path.exists(SUBSET_MANIFEST):
-    rc = os.system(f"curl -fsSL '{REPO_RAW_URL}/project/data/mimic_ils/{_MANIFEST_FILE}' -o '{SUBSET_MANIFEST}'")
-    if rc != 0 or not os.path.exists(SUBSET_MANIFEST):
-        print("[warn] could not fetch manifest from GitHub; upload it to", SUBSET_MANIFEST)
-print(f"[config] MANIFEST_CHOICE={MANIFEST_CHOICE} -> {SUBSET_MANIFEST}")
+# ---- which manifest/split to run -------------------------------------------
+# "subset"=smoke subset | "test"=held-out TEST (2,445 imgs) |
+# "val"=held-out VAL (1,508 imgs) | "valtest"=VAL+TEST pooled
+MANIFEST_CHOICE = "test"          # "subset" | "test" | "val" | "valtest"
+_MANIFEST_FILES = {
+    "subset":  ["mimic_ils_subset_manifest.csv"],
+    "test":    ["mimic_ils_test_manifest.csv"],
+    "val":     ["mimic_ils_val_manifest.csv"],
+    "valtest": ["mimic_ils_test_manifest.csv", "mimic_ils_val_manifest.csv"],
+}[MANIFEST_CHOICE]
+_IMG_ZIP_NAMES = {
+    "subset":  ["mimic_subset.zip"],
+    "test":    ["mimic_subset (1).zip"],
+    "val":     ["mimic_val_subset.zip"],
+    "valtest": ["mimic_subset (1).zip", "mimic_val_subset.zip"],
+}[MANIFEST_CHOICE]
+IMG_ZIPS   = [os.path.join(DRIVE_DATA_DIR, z) for z in _IMG_ZIP_NAMES]
+SUBSET_ZIP = IMG_ZIPS[0]          # back-compat alias
 
 import pandas as pd
+_dfs = []
+for _f in _MANIFEST_FILES:
+    _p = f"/content/{_f}"
+    if not os.path.exists(_p):
+        os.system(f"curl -fsSL '{REPO_RAW_URL}/project/data/mimic_ils/{_f}' -o '{_p}'")
+    _dfs.append(pd.read_csv(_p))
+SUBSET_MANIFEST = f"/content/mimic_ils_{MANIFEST_CHOICE}_manifest.csv"
+pd.concat(_dfs, ignore_index=True).to_csv(SUBSET_MANIFEST, index=False)
+print(f"[config] MANIFEST_CHOICE={MANIFEST_CHOICE} -> {SUBSET_MANIFEST}")
+
 _m = pd.read_csv(SUBSET_MANIFEST)
 print("manifest rows:", len(_m), "| unique studies:", _m.study_id.nunique())
 print("positive pairs:", (_m.polarity=="positive").sum(),
       "| negative pairs:", (_m.polarity=="negative").sum())
 print("splits:", _m.split.value_counts().to_dict())
-print("zips present? subset:", os.path.exists(SUBSET_ZIP), "| ext:", os.path.exists(EXT_ZIP))
-if not os.path.exists(SUBSET_ZIP):
+print("image zips present?", {os.path.basename(z): os.path.exists(z) for z in IMG_ZIPS},
+      "| ext:", os.path.exists(EXT_ZIP))
+if not all(os.path.exists(z) for z in IMG_ZIPS):
     print("[hint] add a shortcut to the shared 'MIMIC-CXR-Ext-ILS' folder into My Drive,",
           "or edit DRIVE_DATA_DIR above.")
 """))
+
 
 
 # =============================================================================
@@ -321,8 +341,6 @@ except Exception as e:
     print("[warn]", e); DRIVE=False
 
 DRIVE_DATA_DIR = "/content/drive/MyDrive/MIMIC-CXR-Ext-ILS"
-# "mimic_subset (1).zip" (3.96 GB) = full TEST-split images (use for MANIFEST_CHOICE="test")
-SUBSET_ZIP = os.path.join(DRIVE_DATA_DIR, "mimic_subset (1).zip")
 EXT_ZIP    = os.path.join(DRIVE_DATA_DIR, "mimic-cxr-ext-ils.zip")
 
 WORK_DIR = "/content/drive/MyDrive/mimic_ils_rosalia" if DRIVE else "/content/mimic_ils_rosalia"
@@ -330,18 +348,38 @@ os.makedirs(WORK_DIR, exist_ok=True)
 UNC_LABELS_PATH = os.path.join(WORK_DIR, "medgemma_uncertainty_subset.json")
 REPO_RAW_URL = "https://raw.githubusercontent.com/nprakash1/uncertaintyestimateyang/rule-bag-of-words"
 
-# ---- which manifest to run (MUST match Cell S0) ----------------------------
-# "subset" = original smoke subset;  "test" = full held-out TEST split (2,445 imgs)
-MANIFEST_CHOICE = "test"          # "subset" | "test"
+# ---- which manifest/split to run (MUST match Cell S0) ----------------------
+# "subset"=smoke subset | "test"=held-out TEST | "val"=held-out VAL | "valtest"=VAL+TEST
+MANIFEST_CHOICE = "test"          # "subset" | "test" | "val" | "valtest"
 # Skip negatives -> ~halve inference. The IoU regression only needs positives;
 # set False if you also want the abstention / negative analysis.
 POSITIVES_ONLY  = True
-_MANIFEST_FILE = {"subset": "mimic_ils_subset_manifest.csv",
-                  "test":   "mimic_ils_test_manifest.csv"}[MANIFEST_CHOICE]
-SUBSET_MANIFEST = f"/content/{_MANIFEST_FILE}"
-if not os.path.exists(SUBSET_MANIFEST):
-    os.system(f"curl -fsSL '{REPO_RAW_URL}/project/data/mimic_ils/{_MANIFEST_FILE}' -o '{SUBSET_MANIFEST}'")
+_MANIFEST_FILES = {
+    "subset":  ["mimic_ils_subset_manifest.csv"],
+    "test":    ["mimic_ils_test_manifest.csv"],
+    "val":     ["mimic_ils_val_manifest.csv"],
+    "valtest": ["mimic_ils_test_manifest.csv", "mimic_ils_val_manifest.csv"],
+}[MANIFEST_CHOICE]
+_IMG_ZIP_NAMES = {
+    "subset":  ["mimic_subset.zip"],
+    "test":    ["mimic_subset (1).zip"],
+    "val":     ["mimic_val_subset.zip"],
+    "valtest": ["mimic_subset (1).zip", "mimic_val_subset.zip"],
+}[MANIFEST_CHOICE]
+IMG_ZIPS   = [os.path.join(DRIVE_DATA_DIR, z) for z in _IMG_ZIP_NAMES]
+SUBSET_ZIP = IMG_ZIPS[0]          # back-compat alias
+
+import pandas as _pd
+_dfs = []
+for _f in _MANIFEST_FILES:
+    _p = f"/content/{_f}"
+    if not os.path.exists(_p):
+        os.system(f"curl -fsSL '{REPO_RAW_URL}/project/data/mimic_ils/{_f}' -o '{_p}'")
+    _dfs.append(_pd.read_csv(_p))
+SUBSET_MANIFEST = f"/content/mimic_ils_{MANIFEST_CHOICE}_manifest.csv"
+_pd.concat(_dfs, ignore_index=True).to_csv(SUBSET_MANIFEST, index=False)
 print(f"[config] MANIFEST_CHOICE={MANIFEST_CHOICE} -> {SUBSET_MANIFEST} | POSITIVES_ONLY={POSITIVES_ONLY}")
+
 
 ROSALIA_REPO      = "checkone/ROSALIA-7B-v1"
 LISA_TOKENIZER    = "xinlai/LISA-7B-v1"
@@ -370,19 +408,25 @@ EXTRACT_ROOT = "/content/mimic_data"
 IMG_EXTRACT  = os.path.join(EXTRACT_ROOT, "images")
 EXT_EXTRACT  = os.path.join(EXTRACT_ROOT, "ext")
 
-def _unzip(zip_path, dest, marker_glob):
+def _unzip(zip_path, dest):
+    # per-zip sentinel so multiple image zips (e.g. val+test) all extract into
+    # the same dest instead of the 2nd being skipped by a shared marker.
     os.makedirs(dest, exist_ok=True)
-    if glob.glob(marker_glob, recursive=True):
-        print(f"[skip] already extracted -> {dest}")
+    sentinel = os.path.join(dest, "._extracted_" + re.sub(r"\W+", "_", os.path.basename(zip_path)))
+    if os.path.exists(sentinel):
+        print(f"[skip] already extracted {os.path.basename(zip_path)} -> {dest}")
         return
     assert os.path.exists(zip_path), f"missing zip: {zip_path} (add the shared folder shortcut to My Drive)"
     print(f"unzipping {os.path.basename(zip_path)} -> {dest} ...")
     with zipfile.ZipFile(zip_path) as z:
         z.extractall(dest)
+    open(sentinel, "w").close()
     print("  done.")
 
-_unzip(SUBSET_ZIP, IMG_EXTRACT, os.path.join(IMG_EXTRACT, "**", "p1*"))
-_unzip(EXT_ZIP,    EXT_EXTRACT, os.path.join(EXT_EXTRACT, "**", "lesion_mask"))
+for _z in IMG_ZIPS:                 # one or more image zips (val+test both extract)
+    _unzip(_z, IMG_EXTRACT)
+_unzip(EXT_ZIP, EXT_EXTRACT)
+
 
 def find_image_root(base):
     for root, dirs, _ in os.walk(base):

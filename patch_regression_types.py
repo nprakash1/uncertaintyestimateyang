@@ -110,8 +110,10 @@ if _need.any():
     subprocess.run([sys.executable, "-m", "pip", "-q", "install", "--upgrade",
                     "transformers>=4.50", "accelerate>=0.30", "huggingface_hub"])
     from huggingface_hub import notebook_login; notebook_login()
+    os.environ["HF_HUB_DISABLE_XET"] = "1"   # Xet backend can hang on Colab; use plain HTTPS
     import re, torch
     from transformers import AutoProcessor, AutoModelForImageTextToText
+
 
     # report text per (study_id, target): merge from the split manifests
     REPO_RAW = ("https://raw.githubusercontent.com/nprakash1/uncertaintyestimateyang/"
@@ -247,12 +249,15 @@ plt.savefig(plot_path, dpi=130); plt.show()
 print("saved ->", plot_path)
 '''
 
-# apply edits (by content anchors so indices stay correct)
+# apply edits (by content anchors so indices stay correct; idempotent)
 cells[find("--- load & prepare the regression frame ---")]["source"] = LOAD
-i_ols = find("nested OLS models")
-cells[i_ols]["source"] = OLS
-cells.insert(i_ols, code_cell(LABEL))          # insert labeling cell just before OLS
+try:
+    cells[find("label uncertainty TYPE with MedGemma")]["source"] = LABEL  # already patched
+except SystemExit:
+    cells.insert(find("nested OLS models"), code_cell(LABEL))              # first patch
+cells[find("nested OLS models")]["source"] = OLS
 cells[find("coefficient plot")]["source"] = PLOT
+
 
 NB.write_text(json.dumps(nb, indent=1))
 print(f"patched {NB} -> {len(cells)} cells")

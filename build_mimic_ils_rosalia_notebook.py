@@ -203,11 +203,13 @@ read it after the restart.
 """))
 
 cells.append(code(r"""import os, re, json
+os.environ["HF_HUB_DISABLE_XET"] = "1"   # Xet backend can hang on Colab; use plain HTTPS
 import pandas as pd
 import torch
 from tqdm.auto import tqdm
 
 manifest = pd.read_csv(SUBSET_MANIFEST)
+
 pos = manifest[manifest.polarity == "positive"].copy()
 # one MedGemma call per (study_id, target); report text is per study
 pos["key"] = pos["study_id"] + "|" + pos["target"].astype(str)
@@ -505,7 +507,9 @@ Same loader/compat-shim as the PadChest notebook. Defines
 
 cells.append(code(r"""import sys, os, subprocess, faulthandler
 faulthandler.enable()
+os.environ["HF_HUB_DISABLE_XET"] = "1"   # Xet backend can hang on Colab; use plain HTTPS
 ROSALIA_REPO_DIR = "/content/rosalia_repo"
+
 if not (os.path.isfile(f"{ROSALIA_REPO_DIR}/model/LISA.py")
         and os.path.isfile(f"{ROSALIA_REPO_DIR}/utils/utils.py")):
     if os.path.isdir(ROSALIA_REPO_DIR): subprocess.run(["rm","-rf",ROSALIA_REPO_DIR])

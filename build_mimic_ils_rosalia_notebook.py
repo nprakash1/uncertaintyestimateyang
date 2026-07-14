@@ -571,7 +571,20 @@ def load_rosalia():
     print(f"VRAM: {torch.cuda.memory_allocated()/1e9:.2f} GB")
     return model, tokenizer, clip, tfm
 
+# robust, resumable weight download (avoids ChunkedEncodingError / IncompleteRead
+# when Colab's connection to HuggingFace drops mid-download of the ~10GB shard)
+from huggingface_hub import snapshot_download
+for _a in range(8):
+    try:
+        snapshot_download(ROSALIA_REPO, resume_download=True, max_workers=2)
+        print("[weights] ROSALIA snapshot fully downloaded"); break
+    except Exception as _e:
+        print(f"[weights][retry {_a+1}/8] {type(_e).__name__}: {_e}")
+else:
+    raise RuntimeError("ROSALIA weight download kept failing; rerun this cell (it resumes).")
+
 model, tokenizer, clip_processor, transform = load_rosalia()
+
 
 def segment(pil_image, instruction):
     image_np = np.array(pil_image)

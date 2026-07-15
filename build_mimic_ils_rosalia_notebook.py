@@ -430,11 +430,17 @@ for _z in IMG_ZIPS:                 # one or more image zips (val+test both extr
 _unzip(EXT_ZIP, EXT_EXTRACT)
 
 
-def find_image_root(base):
+def find_image_roots(base):
+    # ALL roots that directly contain pXX/ dirs (multiple when val+test zips
+    # extract into different top folders, e.g. mimic_subset/ and mimic_val_subset/).
+    roots = []
     for root, dirs, _ in os.walk(base):
         if any(re.fullmatch(r"p1\d", d) for d in dirs):
-            return root
-    raise RuntimeError(f"could not find p1x/ image folders under {base}")
+            roots.append(root)
+            dirs[:] = [d for d in dirs if not re.fullmatch(r"p1\d", d)]  # don't descend into pXX
+    if not roots:
+        raise RuntimeError(f"could not find p1x/ image folders under {base}")
+    return roots
 
 def find_mask_root(base):
     for root, dirs, _ in os.walk(base):
@@ -444,13 +450,16 @@ def find_mask_root(base):
             return os.path.join(root, "lesion_mask")
     raise RuntimeError(f"could not find lesion_mask/ under {base}")
 
-MIMIC_SUBSET_DIR = find_image_root(IMG_EXTRACT)
-LESION_MASK_DIR  = find_mask_root(EXT_EXTRACT)
-print("MIMIC_SUBSET_DIR =", MIMIC_SUBSET_DIR)
-print("LESION_MASK_DIR  =", LESION_MASK_DIR)
-print("  #patient dirs :", len([d for d in os.listdir(MIMIC_SUBSET_DIR) if re.fullmatch(r'p1\d', d)]))
+MIMIC_SUBSET_DIRS = find_image_roots(IMG_EXTRACT)
+MIMIC_SUBSET_DIR  = MIMIC_SUBSET_DIRS[0]   # back-compat alias
+LESION_MASK_DIR   = find_mask_root(EXT_EXTRACT)
+print("MIMIC_SUBSET_DIRS =", MIMIC_SUBSET_DIRS)
+print("LESION_MASK_DIR   =", LESION_MASK_DIR)
+for _rt in MIMIC_SUBSET_DIRS:
+    print(f"  {_rt}: #patient dirs = {len([d for d in os.listdir(_rt) if re.fullmatch(r'p1\d', d)])}")
 print("  #mask studies :", len(os.listdir(LESION_MASK_DIR)))
 """))
+
 
 cells.append(md(r"""## Cell B4 — load manifest + MedGemma labels; local image & mask loaders
 
@@ -482,22 +491,53 @@ neg = manifest[manifest.polarity == "negative"].reset_index(drop=True)
 print(f"positive pairs: {len(pos)} | negative pairs: {len(neg)}")
 print("positive per-lesion:", pos.target.value_counts().to_dict())
 
+# images may live under several roots (val+test zips extract to different top
+# folders); resolve each image_path across all roots, with a small cache.
+_IMG_PATH_CACHE = {}
+def resolve_image(image_path):
+    if image_path in _IMG_PATH_CACHE:
+        return _IMG_PATH_CACHE[image_path]
+    for _rt in MIMIC_SUBSET_DIRS:
+        fp = os.path.join(_rt, image_path)
+        if os.path.exists(fp):
+            _IMG_PATH_CACHE[image_path] = fp
+            return fp
+    _IMG_PATH_CACHE[image_path] = None
+    return None
+
 def load_image(image_path):
-    fp = os.path.join(MIMIC_SUBSET_DIR, image_path)
-    img = Image.open(fp).convert("RGB")
-    return img
+    fp = resolve_image(image_path)
+    if fp is None:
+        raise FileNotFoundError(f"{image_path} not found under any of {MIMIC_SUBSET_DIRS}")
+    return Image.open(fp).convert("RGB")
+
 
 def load_silver_mask(seg_mask_path):
     fp = os.path.join(LESION_MASK_DIR, seg_mask_path)
     m = np.array(Image.open(fp).convert("L"))
     return (m > MASK_BIN_THRESH).astype(np.uint8)
 
-# smoke check on the first positive pair
-_r = pos.iloc[0]
+# ---- coverage check: how many positive images are actually on local disk? ----
+_present = pos["image_path"].map(lambda p: resolve_image(p) is not None)
+print(f"positive images present locally: {int(_present.sum())}/{len(pos)}")
+if _present.sum() == 0:
+    print("[ERROR] none of the manifest's images are in the extracted zip(s).")
+    for _rt in MIMIC_SUBSET_DIRS:
+        print(f"        {_rt}: {sorted(os.listdir(_rt))[:20]}")
+
+    print("        -> your image zip is incomplete/wrong for this split. It must contain")
+    print("           every path in the split's *_image_list.txt (pXX/pXXXXX/sSTUDY/<dicom>.jpg).")
+    raise FileNotFoundError("no manifest images found on disk; rebuild the image zip for this split.")
+elif _present.sum() < len(pos):
+    print(f"[warn] {int((~_present).sum())} positive images are missing from the zip and will be skipped in B8.")
+
+# smoke check on the first positive pair whose image is present
+_r = pos[_present].iloc[0]
 _img = load_image(_r.image_path); _gt = load_silver_mask(_r.seg_mask_path)
 print(f"OK - {_r.study_id} {_r.target}: image={_img.size}, "
       f"silver_mask={_gt.shape}, fg_px={int(_gt.sum())}, instr={_r.instruction!r}")
 """))
+
 
 cells.append(md(r"""## Cell B5 — load ROSALIA (LISA-7B + SAM-H)
 
@@ -724,8 +764,9 @@ def append_row(rec):
 
 # ---- image-availability check (test manifest may reference images not in the
 #      extracted subset zip; missing ones are reported here, then skipped below) ----
-_avail = pos["image_path"].map(lambda p: os.path.exists(os.path.join(MIMIC_SUBSET_DIR, p)))
+_avail = pos["image_path"].map(lambda p: resolve_image(p) is not None)
 print(f"[check] positive images present locally: {int(_avail.sum())}/{len(pos)}")
+
 if _avail.sum() < len(pos):
     print(f"[warn] {int((~_avail).sum())} positive images are NOT on local disk and will be skipped.")
     print("       For the full TEST split you need those images extracted (see the 500GB/GCS note).")

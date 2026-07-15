@@ -1031,7 +1031,88 @@ ax.set_ylabel("max_prob (peak sigmoid)"); ax.set_title("ROSALIA peak confidence 
 plt.tight_layout(); plt.savefig(os.path.join(WORK_DIR,"maxprob_box.png"), dpi=120); plt.show()
 """))
 
+cells.append(md(r"""## Cell B10d — example gallery per uncertainty TYPE
+
+For each uncertainty **type** (certain / presence / spatial / diagnostic /
+borderline, from the regression notebook's cached `unc_type` labels on Drive),
+show a few examples with: the **image**, the **target silver mask**, and
+**ROSALIA's predicted mask** overlaid (red=pred, green=silver), annotated with
+the **disease** and **IoU**. Falls back to the binary certain/uncertain label if
+the 5-way type cache isn't present yet.
+"""))
+
+cells.append(code(r"""import os, numpy as np, pandas as pd, matplotlib.pyplot as plt
+from PIL import Image
+
+N_PER_TYPE = 3          # examples shown per uncertainty type
+LABELS5 = ["certain", "presence", "spatial", "diagnostic", "borderline"]
+TYPES_CSV = os.path.join(WORK_DIR, "uncertainty_types_regression.csv")
+
+res = pd.read_csv(RESULTS_CSV)
+resP = res[res.polarity == "positive"].copy()
+# attach image/mask paths from the manifest (per-pair CSV doesn't store them)
+resP = resP.merge(pos[["pair_id", "image_path", "seg_mask_path"]], on="pair_id", how="left")
+
+def _key(df):
+    return df["study_id"].astype(str) + "|" + df["target"].astype(str)
+
+if os.path.exists(TYPES_CSV):
+    _t = pd.read_csv(TYPES_CSV)
+    _map = dict(zip(_t["study_id"].astype(str) + "|" + _t["target"].astype(str), _t["unc_type"]))
+    resP["unc_type"] = _key(resP).map(_map)
+    TYPES = [t for t in LABELS5 if (resP["unc_type"] == t).any()]
+    print(f"using 5-way unc_type from {TYPES_CSV}")
+else:
+    resP["unc_type"] = resP["uncertainty_label"]
+    TYPES = [t for t in ["certain", "uncertain", "unknown"] if (resP["unc_type"] == t).any()]
+    print("[warn] no 5-way type cache found; falling back to binary uncertainty_label")
+
+print("examples available per type:",
+      {t: int((resP["unc_type"] == t).sum()) for t in TYPES})
+
+def show_examples(df_sel, unc_type):
+    df_sel = df_sel[df_sel["image_path"].map(lambda p: resolve_image(p) is not None)].head(N_PER_TYPE)
+    if len(df_sel) == 0:
+        print(f"[{unc_type}] no examples with images on disk"); return
+    n = len(df_sel)
+    fig, ax = plt.subplots(n, 3, figsize=(12, 4 * n))
+    if n == 1: ax = ax.reshape(1, -1)
+    for i, row in enumerate(df_sel.itertuples()):
+        img = load_image(row.image_path); gt = load_silver_mask(row.seg_mask_path)
+        pred, logits, txt = segment(img, row.instruction)
+        iou, dice, *_ = iou_dice(pred, gt)
+        iw, ih = img.size
+        gt_disp = np.array(Image.fromarray((gt * 255).astype(np.uint8)).resize((iw, ih), Image.NEAREST))
+        pr_disp = np.array(Image.fromarray((pred * 255).astype(np.uint8)).resize((iw, ih), Image.NEAREST))
+        ax[i, 0].imshow(img, cmap="gray"); ax[i, 0].axis("off")
+        ax[i, 0].set_title(f"{row.target}  [{unc_type}]")
+        ax[i, 1].imshow(img, cmap="gray")
+        ax[i, 1].imshow(np.ma.masked_where(gt_disp == 0, gt_disp), cmap="Greens", alpha=0.5)
+        ax[i, 1].set_title("target (silver) mask"); ax[i, 1].axis("off")
+        ax[i, 2].imshow(img, cmap="gray")
+        ax[i, 2].imshow(np.ma.masked_where(gt_disp == 0, gt_disp), cmap="Greens", alpha=0.4)
+        ax[i, 2].imshow(np.ma.masked_where(pr_disp == 0, pr_disp), cmap="Reds", alpha=0.45)
+        ax[i, 2].set_title(f"pred (red) vs silver (green)\nIoU={iou:.2f}  Dice={dice:.2f}")
+        ax[i, 2].axis("off")
+    fig.suptitle(f"Uncertainty type: {unc_type}", fontsize=14)
+    plt.tight_layout()
+    _pp = os.path.join(WORK_DIR, f"examples_{unc_type}.png")
+    plt.savefig(_pp, dpi=110, bbox_inches="tight"); plt.show()
+    print("saved ->", _pp)
+
+# prefer examples where ROSALIA actually produced a mask (legible overlays),
+# then top up with non-firing ones if a type is sparse.
+_fired = resP[resP.get("fired", 1) == 1] if "fired" in resP.columns else resP
+for _ty in TYPES:
+    sel = _fired[_fired["unc_type"] == _ty]
+    if len(sel) < N_PER_TYPE:
+        extra = resP[(resP["unc_type"] == _ty) & (~resP.index.isin(sel.index))]
+        sel = pd.concat([sel, extra])
+    show_examples(sel, _ty)
+"""))
+
 cells.append(md(r"""## Cell B11 — notes on reproduction
+
 
 
 * **gIoU / cIoU** are the LISA-family metrics; **Dice** is included for

@@ -256,6 +256,56 @@ plt.savefig(plot_path, dpi=130); plt.show()
 print("saved ->", plot_path)
 '''
 
+# ------------------------------------------- per-disease certain vs mode-uncertain
+PLOT2 = r'''# --- per disease: 'certain' vs the MODE (most common) uncertain type ----------
+# For each disease: one bar = # findings labeled 'certain', the other = # findings
+# of that disease's single most common UNCERTAIN type (annotated with its name).
+import numpy as np, pandas as pd, matplotlib.pyplot as plt, os
+_ct = pd.crosstab(P["target"], P["unc_type"].astype(str))
+for _t in LABELS:
+    if _t not in _ct.columns:
+        _ct[_t] = 0
+_unc_types = [t for t in LABELS if t != "certain"]
+
+rows = []
+for dis, r in _ct.iterrows():
+    unc_counts = {t: int(r.get(t, 0)) for t in _unc_types}
+    mode_type = max(unc_counts, key=unc_counts.get) if any(unc_counts.values()) else "none"
+    rows.append(dict(disease=dis, certain=int(r.get("certain", 0)),
+                     mode_type=mode_type, mode_n=unc_counts.get(mode_type, 0),
+                     total_uncertain=sum(unc_counts.values())))
+D = pd.DataFrame(rows).sort_values("certain", ascending=False).reset_index(drop=True)
+
+x = np.arange(len(D)); w = 0.4
+fig, ax = plt.subplots(figsize=(11, 5))
+b1 = ax.bar(x - w/2, D["certain"], w, label="certain", color="tab:blue")
+b2 = ax.bar(x + w/2, D["mode_n"],  w, label="mode uncertain type", color="tab:orange")
+ax.bar_label(b1, fontsize=8)
+ax.bar_label(b2, labels=[f"{n}\n({t})" for n, t in zip(D["mode_n"], D["mode_type"])],
+             fontsize=8)
+ax.set_xticks(x); ax.set_xticklabels(D["disease"], rotation=25, ha="right")
+ax.set_ylabel("# positive findings")
+ax.set_title("Per disease: 'certain' vs the most common (mode) uncertain type")
+ax.legend()
+plt.tight_layout()
+_pp = os.path.join(OUT_DIR, "certain_vs_mode_uncertain_by_disease.png")
+plt.savefig(_pp, dpi=130); plt.show()
+print("saved ->", _pp)
+print(D.to_string(index=False))
+
+# bonus: full 5-way stacked composition per disease (context for the mode above)
+_comp = _ct.reindex(columns=LABELS, fill_value=0)
+_comp = _comp.loc[D["disease"]]            # same disease order as bars above
+ax2 = _comp.plot(kind="bar", stacked=True, figsize=(11, 5), colormap="viridis")
+ax2.set_ylabel("# positive findings"); ax2.set_xlabel("")
+ax2.set_title("Per disease: full uncertainty-type composition (stacked)")
+plt.xticks(rotation=25, ha="right"); plt.legend(title="unc_type", bbox_to_anchor=(1.01, 1))
+plt.tight_layout()
+_pp2 = os.path.join(OUT_DIR, "unc_type_composition_by_disease.png")
+plt.savefig(_pp2, dpi=130); plt.show()
+print("saved ->", _pp2)
+'''
+
 # apply edits (by content anchors so indices stay correct; idempotent)
 cells[find("--- load & prepare the regression frame ---")]["source"] = LOAD
 try:
@@ -264,6 +314,12 @@ except SystemExit:
     cells.insert(find("nested OLS models"), code_cell(LABEL))              # first patch
 cells[find("nested OLS models")]["source"] = OLS
 cells[find("coefficient plot")]["source"] = PLOT
+# add / refresh the per-disease certain-vs-mode-uncertain graph after the coef plot
+try:
+    cells[find("per disease: 'certain' vs the MODE")]["source"] = PLOT2    # already added
+except SystemExit:
+    cells.insert(find("coefficient plot") + 1, code_cell(PLOT2))          # first add
+
 
 
 NB.write_text(json.dumps(nb, indent=1))

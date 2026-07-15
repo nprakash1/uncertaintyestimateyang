@@ -807,9 +807,17 @@ if not POSITIVES_ONLY:
 else:
     print("[info] POSITIVES_ONLY=True -> skipping negatives (no abstention analysis).")
 
+# de-duplicate rows from any earlier re-runs (keep the latest per pair_id) so
+# downstream counts/regressions aren't inflated by duplicates.
 results = pd.read_csv(RESULTS_CSV)
+_before = len(results)
+results = results.drop_duplicates("pair_id", keep="last")
+if len(results) < _before:
+    results.to_csv(RESULTS_CSV, index=False)
+    print(f"[dedup] removed {_before - len(results)} duplicate pair_id rows")
 print(f"\nDone. total scored rows: {len(results)}")
 """))
+
 
 cells.append(md(r"""## Cell B9 — aggregate metrics (overall, per lesion, by uncertainty)
 

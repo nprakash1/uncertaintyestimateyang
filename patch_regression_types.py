@@ -32,7 +32,14 @@ def code_cell(src):
 # ---------------------------------------------------------------- load & prepare
 LOAD = r'''# --- load & prepare the regression frame ---
 res = pd.read_csv(RESULTS_CSV)
+if "pair_id" in res.columns:                     # drop duplicate rows from re-runs
+    _b = len(res); res = res.drop_duplicates("pair_id", keep="last")
+    if len(res) < _b:
+        print(f"[dedup] removed {_b - len(res)} duplicate pair_id rows")
 print("rows:", len(res), "| columns:", list(res.columns))
+if "split" in res.columns:
+    print("split counts:", res["split"].value_counts().to_dict())
+
 
 P = res[(res.get("polarity") == "positive") & res["iou"].notna()].copy()
 P["log_area"] = np.log1p(P["gt_px"])          # silver-mask area (skewed -> log)

@@ -1035,16 +1035,21 @@ cells.append(md(r"""## Cell B10d — example gallery per uncertainty TYPE
 
 For each uncertainty **type** (certain / presence / spatial / diagnostic /
 borderline, from the regression notebook's cached `unc_type` labels on Drive),
-show a few examples with: the **image**, the **target silver mask**, and
+show `N_PER_TYPE` examples with: the **image**, the **target silver mask**, and
 **ROSALIA's predicted mask** overlaid (red=pred, green=silver), annotated with
 the **disease** and **IoU**. Falls back to the binary certain/uncertain label if
 the 5-way type cache isn't present yet.
+
+⚠️ Predicted masks aren't cached, so this cell re-runs ROSALIA `segment()` on the
+shown examples (needs Cell B5 loaded). At `N_PER_TYPE=15` that's up to 75
+inferences — a few minutes on a GPU.
 """))
 
 cells.append(code(r"""import os, numpy as np, pandas as pd, matplotlib.pyplot as plt
 from PIL import Image
 
-N_PER_TYPE = 3          # examples shown per uncertainty type
+N_PER_TYPE = 15         # examples shown per uncertainty type
+
 LABELS5 = ["certain", "presence", "spatial", "diagnostic", "borderline"]
 TYPES_CSV = os.path.join(WORK_DIR, "uncertainty_types_regression.csv")
 

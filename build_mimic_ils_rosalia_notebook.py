@@ -1048,8 +1048,9 @@ shown examples (needs Cell B5 loaded). At `N_PER_TYPE=15` that's up to 75
 inferences — a few minutes on a GPU.
 """))
 
-cells.append(code(r"""import os, numpy as np, pandas as pd, matplotlib.pyplot as plt
+cells.append(code(r"""import os, textwrap, numpy as np, pandas as pd, matplotlib.pyplot as plt
 from PIL import Image
+
 
 N_PER_TYPE = 15         # examples shown per uncertainty type
 # de-emphasise cardiomegaly (it dominates & its "mask" is the whole heart):
@@ -1066,8 +1067,11 @@ assert os.path.exists(RESULTS_CSV), f"per-pair CSV not found: {RESULTS_CSV} (run
 res = pd.read_csv(RESULTS_CSV)
 
 resP = res[res.polarity == "positive"].copy()
-# attach image/mask paths from the manifest (per-pair CSV doesn't store them)
-resP = resP.merge(pos[["pair_id", "image_path", "seg_mask_path"]], on="pair_id", how="left")
+# attach image/mask paths + report text from the manifest (CSV doesn't store them)
+_cols = ["pair_id", "image_path", "seg_mask_path"] + \
+        [c for c in ["section_content", "section_name"] if c in pos.columns]
+resP = resP.merge(pos[_cols], on="pair_id", how="left")
+
 
 def _key(df):
     return df["study_id"].astype(str) + "|" + df["target"].astype(str)
@@ -1141,9 +1145,18 @@ def show_examples(df_sel, unc_type):
         _color_overlay(ax[i, 2], pr_b, (1, 0, 0), alpha=0.45)         # pred   = red
         ax[i, 2].set_title(f"pred (red) vs silver (green)\nIoU={iou:.2f}  Dice={dice:.2f}")
         ax[i, 2].axis("off")
+        # report finding text under the row (wrapped) + printed to stdout
+        report = getattr(row, "section_content", None)
+        if isinstance(report, str) and report.strip():
+            snippet = " ".join(report.split())
+            wrapped = textwrap.fill(f"Report: {snippet}", width=110)
+            ax[i, 0].text(0.0, -0.04, wrapped, transform=ax[i, 0].transAxes,
+                          ha="left", va="top", fontsize=8, color="black", wrap=True)
+            print(f"[{unc_type}] {row.target} (IoU={iou:.2f}): {snippet[:300]}")
 
     fig.suptitle(f"Uncertainty type: {unc_type}", fontsize=14)
     plt.tight_layout()
+
     _pp = os.path.join(WORK_DIR, f"examples_{unc_type}.png")
     plt.savefig(_pp, dpi=110, bbox_inches="tight"); plt.show()
     print("saved ->", _pp)

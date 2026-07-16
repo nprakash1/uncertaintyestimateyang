@@ -1126,7 +1126,9 @@ def show_examples(df_sel, unc_type):
 
         print(f"[{unc_type}] no examples with images on disk"); return
     n = len(df_sel)
-    fig, ax = plt.subplots(n, 3, figsize=(12, 4 * n))
+    # bigger cells (6.3in wide each) so portrait CXRs are large; extra row height
+    # leaves room for the wrapped report caption spanning the full width.
+    fig, ax = plt.subplots(n, 3, figsize=(19, 6.2 * n))
     if n == 1: ax = ax.reshape(1, -1)
     for i, row in enumerate(df_sel.itertuples()):
         img = load_image(row.image_path); gt = load_silver_mask(row.seg_mask_path)
@@ -1136,7 +1138,7 @@ def show_examples(df_sel, unc_type):
         gt_b = np.array(Image.fromarray((gt * 255).astype(np.uint8)).resize((iw, ih), Image.NEAREST)) > 0
         pr_b = np.array(Image.fromarray((pred * 255).astype(np.uint8)).resize((iw, ih), Image.NEAREST)) > 0
         ax[i, 0].imshow(img, cmap="gray"); ax[i, 0].axis("off")
-        ax[i, 0].set_title(f"{row.target}  [{unc_type}]")
+        ax[i, 0].set_title(f"{row.target}  [{unc_type}]  (instruction: {row.instruction})", fontsize=10)
         ax[i, 1].imshow(img, cmap="gray")
         _color_overlay(ax[i, 1], gt_b, (0, 1, 0), alpha=0.5)          # silver = green
         ax[i, 1].set_title("target (silver) mask"); ax[i, 1].axis("off")
@@ -1145,17 +1147,20 @@ def show_examples(df_sel, unc_type):
         _color_overlay(ax[i, 2], pr_b, (1, 0, 0), alpha=0.45)         # pred   = red
         ax[i, 2].set_title(f"pred (red) vs silver (green)\nIoU={iou:.2f}  Dice={dice:.2f}")
         ax[i, 2].axis("off")
-        # report finding text under the row (wrapped) + printed to stdout
+        # FULL report section under the row (section_content) + printed to stdout.
+        # NOTE: this is the whole report section, NOT a per-finding sentence;
+        # the mask is driven by target/location via the instruction above.
         report = getattr(row, "section_content", None)
         if isinstance(report, str) and report.strip():
             snippet = " ".join(report.split())
-            wrapped = textwrap.fill(f"Report: {snippet}", width=110)
-            ax[i, 0].text(0.0, -0.04, wrapped, transform=ax[i, 0].transAxes,
-                          ha="left", va="top", fontsize=8, color="black", wrap=True)
+            wrapped = textwrap.fill(f"Report ({row.section_name}): {snippet}", width=170)
+            ax[i, 1].text(0.0, -0.03, wrapped, transform=ax[i, 1].transAxes,
+                          ha="center", va="top", fontsize=8.5, color="black")
             print(f"[{unc_type}] {row.target} (IoU={iou:.2f}): {snippet[:300]}")
 
-    fig.suptitle(f"Uncertainty type: {unc_type}", fontsize=14)
-    plt.tight_layout()
+    fig.suptitle(f"Uncertainty type: {unc_type}", fontsize=15)
+    plt.tight_layout(rect=[0, 0, 1, 0.99])
+
 
     _pp = os.path.join(WORK_DIR, f"examples_{unc_type}.png")
     plt.savefig(_pp, dpi=110, bbox_inches="tight"); plt.show()

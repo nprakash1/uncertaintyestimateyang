@@ -1049,8 +1049,12 @@ cells.append(code(r"""import os, numpy as np, pandas as pd, matplotlib.pyplot as
 from PIL import Image
 
 N_PER_TYPE = 15         # examples shown per uncertainty type
+# de-emphasise cardiomegaly (it dominates & its "mask" is the whole heart):
+EXCLUDE_TARGETS = []               # e.g. ["cardiomegaly"] to drop it entirely
+MAX_PER_DISEASE = {"cardiomegaly": 2}   # cap how many of a disease appear per type
 
 LABELS5 = ["certain", "presence", "spatial", "diagnostic", "borderline"]
+
 TYPES_CSV = os.path.join(WORK_DIR, "uncertainty_types_regression.csv")
 
 res = pd.read_csv(RESULTS_CSV)
@@ -1075,9 +1079,29 @@ else:
 print("examples available per type:",
       {t: int((resP["unc_type"] == t).sum()) for t in TYPES})
 
+def select_for_type(unc_type):
+    # fired-first ordering, drop excluded diseases + those without images on disk,
+    # then cap how many of any one disease appear (e.g. cardiomegaly) per type.
+    cand = pd.concat([_fired[_fired["unc_type"] == unc_type],
+                      resP[resP["unc_type"] == unc_type]])
+    cand = cand[~cand.index.duplicated(keep="first")]
+    cand = cand[~cand["target"].isin(EXCLUDE_TARGETS)]
+    cand = cand[cand["image_path"].map(lambda p: resolve_image(p) is not None)]
+    picked, per = [], {}
+    for row in cand.itertuples():
+        cap = MAX_PER_DISEASE.get(row.target)
+        if cap is not None and per.get(row.target, 0) >= cap:
+            continue
+        per[row.target] = per.get(row.target, 0) + 1
+        picked.append(row.Index)
+        if len(picked) >= N_PER_TYPE:
+            break
+    return cand.loc[picked]
+
 def show_examples(df_sel, unc_type):
-    df_sel = df_sel[df_sel["image_path"].map(lambda p: resolve_image(p) is not None)].head(N_PER_TYPE)
+    df_sel = df_sel.head(N_PER_TYPE)
     if len(df_sel) == 0:
+
         print(f"[{unc_type}] no examples with images on disk"); return
     n = len(df_sel)
     fig, ax = plt.subplots(n, 3, figsize=(12, 4 * n))
@@ -1105,16 +1129,15 @@ def show_examples(df_sel, unc_type):
     plt.savefig(_pp, dpi=110, bbox_inches="tight"); plt.show()
     print("saved ->", _pp)
 
-# prefer examples where ROSALIA actually produced a mask (legible overlays),
-# then top up with non-firing ones if a type is sparse.
+# prefer examples where ROSALIA actually produced a mask (legible overlays);
+# select_for_type() tops up with non-firing rows and applies EXCLUDE/cap.
 _fired = resP[resP.get("fired", 1) == 1] if "fired" in resP.columns else resP
 for _ty in TYPES:
-    sel = _fired[_fired["unc_type"] == _ty]
-    if len(sel) < N_PER_TYPE:
-        extra = resP[(resP["unc_type"] == _ty) & (~resP.index.isin(sel.index))]
-        sel = pd.concat([sel, extra])
+    sel = select_for_type(_ty)
+    print(f"[{_ty}] showing {len(sel)} (disease mix: {sel['target'].value_counts().to_dict()})")
     show_examples(sel, _ty)
 """))
+
 
 cells.append(md(r"""## Cell B11 — notes on reproduction
 

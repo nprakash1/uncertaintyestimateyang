@@ -495,8 +495,11 @@ print("positive per-lesion:", pos.target.value_counts().to_dict())
 # folders); resolve each image_path across all roots, with a small cache.
 _IMG_PATH_CACHE = {}
 def resolve_image(image_path):
+    if not isinstance(image_path, str):   # NaN/float from unmatched merges -> no image
+        return None
     if image_path in _IMG_PATH_CACHE:
         return _IMG_PATH_CACHE[image_path]
+
     for _rt in MIMIC_SUBSET_DIRS:
         fp = os.path.join(_rt, image_path)
         if os.path.exists(fp):
@@ -1090,7 +1093,9 @@ def select_for_type(unc_type):
                       resP[resP["unc_type"] == unc_type]])
     cand = cand[~cand.index.duplicated(keep="first")]
     cand = cand[~cand["target"].isin(EXCLUDE_TARGETS)]
+    cand = cand[cand["image_path"].notna()]      # val/train rows unmatched by the test manifest
     cand = cand[cand["image_path"].map(lambda p: resolve_image(p) is not None)]
+
     picked, per = [], {}
     for row in cand.itertuples():
         cap = MAX_PER_DISEASE.get(row.target)

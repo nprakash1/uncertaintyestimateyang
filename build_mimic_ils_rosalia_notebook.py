@@ -1107,6 +1107,15 @@ def select_for_type(unc_type):
             break
     return cand.loc[picked]
 
+def _color_overlay(ax, mask_bool, rgb, alpha=0.5):
+    # draw a SOLID-colour transparent overlay (avoids colormap-normalisation
+    # turning a constant mask value into near-white).
+    h, w = mask_bool.shape
+    ov = np.zeros((h, w, 4), dtype=float)
+    ov[..., 0], ov[..., 1], ov[..., 2] = rgb
+    ov[..., 3] = np.where(mask_bool, alpha, 0.0)
+    ax.imshow(ov)
+
 def show_examples(df_sel, unc_type):
     df_sel = df_sel.head(N_PER_TYPE)
     if len(df_sel) == 0:
@@ -1120,18 +1129,19 @@ def show_examples(df_sel, unc_type):
         pred, logits, txt = segment(img, row.instruction)
         iou, dice, *_ = iou_dice(pred, gt)
         iw, ih = img.size
-        gt_disp = np.array(Image.fromarray((gt * 255).astype(np.uint8)).resize((iw, ih), Image.NEAREST))
-        pr_disp = np.array(Image.fromarray((pred * 255).astype(np.uint8)).resize((iw, ih), Image.NEAREST))
+        gt_b = np.array(Image.fromarray((gt * 255).astype(np.uint8)).resize((iw, ih), Image.NEAREST)) > 0
+        pr_b = np.array(Image.fromarray((pred * 255).astype(np.uint8)).resize((iw, ih), Image.NEAREST)) > 0
         ax[i, 0].imshow(img, cmap="gray"); ax[i, 0].axis("off")
         ax[i, 0].set_title(f"{row.target}  [{unc_type}]")
         ax[i, 1].imshow(img, cmap="gray")
-        ax[i, 1].imshow(np.ma.masked_where(gt_disp == 0, gt_disp), cmap="Greens", alpha=0.5)
+        _color_overlay(ax[i, 1], gt_b, (0, 1, 0), alpha=0.5)          # silver = green
         ax[i, 1].set_title("target (silver) mask"); ax[i, 1].axis("off")
         ax[i, 2].imshow(img, cmap="gray")
-        ax[i, 2].imshow(np.ma.masked_where(gt_disp == 0, gt_disp), cmap="Greens", alpha=0.4)
-        ax[i, 2].imshow(np.ma.masked_where(pr_disp == 0, pr_disp), cmap="Reds", alpha=0.45)
+        _color_overlay(ax[i, 2], gt_b, (0, 1, 0), alpha=0.40)         # silver = green
+        _color_overlay(ax[i, 2], pr_b, (1, 0, 0), alpha=0.45)         # pred   = red
         ax[i, 2].set_title(f"pred (red) vs silver (green)\nIoU={iou:.2f}  Dice={dice:.2f}")
         ax[i, 2].axis("off")
+
     fig.suptitle(f"Uncertainty type: {unc_type}", fontsize=14)
     plt.tight_layout()
     _pp = os.path.join(WORK_DIR, f"examples_{unc_type}.png")

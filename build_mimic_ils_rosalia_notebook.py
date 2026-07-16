@@ -1126,9 +1126,9 @@ def show_examples(df_sel, unc_type):
 
         print(f"[{unc_type}] no examples with images on disk"); return
     n = len(df_sel)
-    # bigger cells (6.3in wide each) so portrait CXRs are large; extra row height
-    # leaves room for the wrapped report caption spanning the full width.
-    fig, ax = plt.subplots(n, 3, figsize=(19, 6.2 * n))
+    # large square cells (~7in each) so the portrait CXRs render big; the
+    # ROSALIA segmentation instruction is shown as a wrapped caption per row.
+    fig, ax = plt.subplots(n, 3, figsize=(21, 7.2 * n))
     if n == 1: ax = ax.reshape(1, -1)
     for i, row in enumerate(df_sel.itertuples()):
         img = load_image(row.image_path); gt = load_silver_mask(row.seg_mask_path)
@@ -1138,7 +1138,7 @@ def show_examples(df_sel, unc_type):
         gt_b = np.array(Image.fromarray((gt * 255).astype(np.uint8)).resize((iw, ih), Image.NEAREST)) > 0
         pr_b = np.array(Image.fromarray((pred * 255).astype(np.uint8)).resize((iw, ih), Image.NEAREST)) > 0
         ax[i, 0].imshow(img, cmap="gray"); ax[i, 0].axis("off")
-        ax[i, 0].set_title(f"{row.target}  [{unc_type}]  (instruction: {row.instruction})", fontsize=10)
+        ax[i, 0].set_title(f"{row.target}  [{unc_type}]", fontsize=12)
         ax[i, 1].imshow(img, cmap="gray")
         _color_overlay(ax[i, 1], gt_b, (0, 1, 0), alpha=0.5)          # silver = green
         ax[i, 1].set_title("target (silver) mask"); ax[i, 1].axis("off")
@@ -1147,19 +1147,17 @@ def show_examples(df_sel, unc_type):
         _color_overlay(ax[i, 2], pr_b, (1, 0, 0), alpha=0.45)         # pred   = red
         ax[i, 2].set_title(f"pred (red) vs silver (green)\nIoU={iou:.2f}  Dice={dice:.2f}")
         ax[i, 2].axis("off")
-        # FULL report section under the row (section_content) + printed to stdout.
-        # NOTE: this is the whole report section, NOT a per-finding sentence;
-        # the mask is driven by target/location via the instruction above.
-        report = getattr(row, "section_content", None)
-        if isinstance(report, str) and report.strip():
-            snippet = " ".join(report.split())
-            wrapped = textwrap.fill(f"Report ({row.section_name}): {snippet}", width=170)
-            ax[i, 1].text(0.0, -0.03, wrapped, transform=ax[i, 1].transAxes,
-                          ha="center", va="top", fontsize=8.5, color="black")
-            print(f"[{unc_type}] {row.target} (IoU={iou:.2f}): {snippet[:300]}")
+        # ROSALIA segmentation PROMPT under the row (the actual instruction fed
+        # to the model, from the manifest) -- not the report text.
+        instr = " ".join(str(row.instruction).split())
+        ax[i, 1].text(0.5, -0.04, textwrap.fill(f"instruction: {instr}", width=90),
+                      transform=ax[i, 1].transAxes, ha="center", va="top",
+                      fontsize=11, color="black")
+        print(f"[{unc_type}] {row.target} (IoU={iou:.2f}) instruction: {instr}")
 
     fig.suptitle(f"Uncertainty type: {unc_type}", fontsize=15)
     plt.tight_layout(rect=[0, 0, 1, 0.99])
+
 
 
     _pp = os.path.join(WORK_DIR, f"examples_{unc_type}.png")

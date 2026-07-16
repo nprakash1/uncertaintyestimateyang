@@ -1055,9 +1055,13 @@ MAX_PER_DISEASE = {"cardiomegaly": 2}   # cap how many of a disease appear per t
 
 LABELS5 = ["certain", "presence", "spatial", "diagnostic", "borderline"]
 
+# defined here too so this cell runs standalone (B8 may have been skipped)
+RESULTS_CSV = os.path.join(WORK_DIR, "rosalia_mimic_ils_per_pair.csv")
 TYPES_CSV = os.path.join(WORK_DIR, "uncertainty_types_regression.csv")
+assert os.path.exists(RESULTS_CSV), f"per-pair CSV not found: {RESULTS_CSV} (run B8 first)"
 
 res = pd.read_csv(RESULTS_CSV)
+
 resP = res[res.polarity == "positive"].copy()
 # attach image/mask paths from the manifest (per-pair CSV doesn't store them)
 resP = resP.merge(pos[["pair_id", "image_path", "seg_mask_path"]], on="pair_id", how="left")

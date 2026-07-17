@@ -134,7 +134,8 @@ UNC_LABELS_PATH = os.path.join(WORK_DIR, "medgemma_uncertainty_subset.json")
 REPO_RAW_URL = "https://raw.githubusercontent.com/nprakash1/uncertaintyestimateyang/rule-bag-of-words"
 
 # split must match the split whose MedGemma labels you cached
-MANIFEST_CHOICE = "test"          # "subset" | "test" | "val" | "valtest"
+MANIFEST_CHOICE = "valtest"       # "subset" | "test" | "val" | "valtest" (VAL+TEST pooled)
+
 _MANIFEST_FILES = {
     "subset":  ["mimic_ils_subset_manifest.csv"],
     "test":    ["mimic_ils_test_manifest.csv"],
@@ -434,7 +435,8 @@ so folds cost nothing extra.
 cells.append(code(r"""import os, pandas as pd
 from tqdm.auto import tqdm
 
-PAIR_CSV = os.path.join(WORK_DIR, "balanced_kfold_per_pair.csv")
+PAIR_CSV = os.path.join(WORK_DIR, f"balanced_kfold_per_pair_{MANIFEST_CHOICE}.csv")
+
 done = set()
 if os.path.exists(PAIR_CSV):
     done = set(pd.read_csv(PAIR_CSV)["pair_id"]); print(f"resuming; {len(done)} cached")

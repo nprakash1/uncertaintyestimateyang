@@ -634,57 +634,122 @@ plt.tight_layout(); plt.savefig(os.path.join(WORK_DIR,"balanced_kfold_disease_ga
 print("saved plots ->", WORK_DIR)
 """))
 
-# ---- Cell 12: calibration --------------------------------------------------
-cells.append(md(r"""## Cell 12 — calibration: does confidence track segmentation quality?
+# ---- Cell 12: per-disease, NO folds (all matched data at once) -------------
+cells.append(md(r"""## Cell 12 — per-disease certain vs uncertain, NO folds (all data at once)
 
-The gap tables can show that uncertain findings get **lower IoU** while the
-model's **confidence stays the same** (`p_in_pred` ≈ equal). That is a
-**mis-calibration** signature: the model gets less accurate without becoming less
-confident. This cell quantifies it directly on the matched set:
+Same per-disease comparison as **Cell 10**, but instead of computing a mean per
+fold and averaging the 5 folds, we pool **all** the matched rows and take one
+mean per disease per group. Metrics are identical (iou, p_in_pred, p_in_gt).
 
-1. **Confidence→accuracy correlation** — Pearson/Spearman of `p_in_gt` (prob mass
-   on the true lesion) vs `iou`, computed **separately for certain and
-   uncertain**. If confidence were well-calibrated, higher confidence should
-   predict higher IoU *equally* in both groups; a weaker correlation in the
-   uncertain arm means confidence is a worse quality signal there.
-2. **Reliability curve** — bin findings by `p_in_gt` and plot mean IoU per bin for
-   each group. A group whose curve sits **below** the other delivers less IoU for
-   the *same* confidence → over-confident.
+Because there are no folds, the spread is reported as an independent-samples
+Welch t-test (`t_p`) between the certain and uncertain rows of each disease
+(cardiomegaly is already absent — it had no uncertain cases to match).
 """))
 
-cells.append(code(r"""import numpy as np, pandas as pd, matplotlib.pyplot as plt, os
+cells.append(code(r"""import numpy as np, pandas as pd
 from scipy import stats
 
-cal = matched.dropna(subset=["iou","p_in_gt"]).copy()
+def per_disease_nofold(data, metric, g0="certain", g1="uncertain"):
+    recs = []
+    for dis in sorted(data.disease.unique()):
+        c = data[(data.disease==dis) & (data.group==g0)][metric].dropna()
+        u = data[(data.disease==dis) & (data.group==g1)][metric].dropna()
+        if len(c)==0 or len(u)==0: continue
+        try:    p = stats.ttest_ind(u, c, equal_var=False).pvalue
+        except Exception: p = float("nan")
+        recs.append(dict(disease=dis, n_certain=len(c), n_uncertain=len(u),
+                         certain=c.mean(), uncertain=u.mean(),
+                         gap=u.mean()-c.mean(), t_p=p))
+    return pd.DataFrame(recs).set_index("disease")
 
-print("confidence(p_in_gt) -> accuracy(iou) correlation, by group:")
-print(f"{'group':10s} {'n':>5s} {'Pearson r':>10s} {'p':>10s} {'Spearman r':>11s} {'p':>10s}")
-for grp, g in cal.groupby("group"):
-    pr, pp = stats.pearsonr(g.p_in_gt, g.iou)
-    sr, sp = stats.spearmanr(g.p_in_gt, g.iou)
-    print(f"{grp:10s} {len(g):5d} {pr:10.3f} {pp:10.3g} {sr:11.3f} {sp:10.3g}")
+for m in ["iou", "p_in_pred", "p_in_gt"]:
+    print(f"\n===== {m}: per-disease certain vs uncertain (ALL matched data, no folds) =====")
+    print(per_disease_nofold(matched, m).round(4).to_string())
+"""))
 
-# reliability curve: mean IoU vs binned p_in_gt, per group
-bins = np.linspace(0, 1, 9)
-ctr = 0.5*(bins[1:]+bins[:-1])
-fig, ax = plt.subplots(figsize=(7,5))
-for grp, color in [("certain","tab:blue"), ("uncertain","tab:orange")]:
-    g = cal[cal.group==grp].copy()
-    g["b"] = pd.cut(g.p_in_gt, bins, labels=False, include_lowest=True)
-    mean_iou = g.groupby("b").iou.mean().reindex(range(len(ctr)))
-    ax.plot(ctr, mean_iou.values, "-o", color=color, label=f"{grp} (n={len(g)})")
-ax.plot([0,1],[0,1], "k--", lw=1, alpha=0.5, label="perfect (IoU=confidence)")
-ax.set_xlabel("mean prob on true lesion (p_in_gt)  [confidence]")
-ax.set_ylabel("mean IoU  [accuracy]")
-ax.set_title("Reliability: does higher confidence -> higher IoU?")
-ax.legend(); plt.tight_layout()
-plt.savefig(os.path.join(WORK_DIR,"balanced_kfold_calibration.png"), dpi=120); plt.show()
-print("saved calibration plot ->", WORK_DIR)
+# ---- Cell 13: macro (no folds) across uncertainty TYPES --------------------
+cells.append(md(r"""## Cell 13 — MACRO (no folds) by uncertainty TYPE: presence / spatial / diagnostic
+
+Reproduces the **MACRO-AVERAGED** table (certain vs "other") but:
+* **no folds** — we macro-average across **diseases** and use a paired t-test
+  *across diseases* (each disease is one matched pair) instead of across folds;
+* **cardiomegaly excluded**;
+* instead of one binary "uncertain", we compare **certain** vs each *fine
+  uncertainty type* separately: **presence**, **spatial**, **diagnostic** (plus
+  a combined "uncertain = any of the three" row for reference).
+
+The fine type labels come from the uncertainty-type diagnostic notebook
+(`uncertainty_types_test.csv`, keyed by study_id+finding). Rows without a type
+label (e.g. the val split, if types were only run on test) are dropped here.
+
+Reading it: for each metric, `certain`/`other` are the macro means (mean of
+per-disease means), `gap = other - certain`, `gap_std` is the spread across
+diseases, and `paired_t_p` tests whether the per-disease gap is consistently
+non-zero.
+"""))
+
+cells.append(code(r"""import os, numpy as np, pandas as pd
+from scipy import stats
+
+TYPES_CSV = os.path.join(WORK_DIR, "uncertainty_types_test.csv")
+assert os.path.exists(TYPES_CSV), (
+    "missing uncertainty_types_test.csv - run the uncertainty_type_diagnostic "
+    "notebook first (it saves to the same WORK_DIR).")
+types = (pd.read_csv(TYPES_CSV)[["study_id","target","unc_type"]]
+         .rename(columns={"target":"disease"})
+         .drop_duplicates(["study_id","disease"]))
+
+# attach fine type to the cached per-pair metrics; drop cardiomegaly
+tp = pair_df.merge(types, on=["study_id","disease"], how="inner")
+tp = tp[tp.disease != "cardiomegaly"].copy()
+print("pairs with a fine type label (excl. cardiomegaly):", len(tp))
+print("type counts:", tp.unc_type.value_counts().to_dict())
+
+METRICS = ["iou", "p_in_pred", "p_in_gt"]
+
+def macro_nofold(data, pos_label):
+    # certain vs pos_label: macro across diseases + paired t across diseases
+    rows = []
+
+    for m in METRICS:
+        pc, pu, ns = [], [], []
+        for dis in sorted(data.disease.unique()):
+            c = data[(data.disease==dis) & (data.unc_type=="certain")][m].dropna()
+            u = data[(data.disease==dis) & (data.unc_type==pos_label)][m].dropna()
+            if len(c)>0 and len(u)>0:
+                pc.append(c.mean()); pu.append(u.mean()); ns.append((len(c),len(u)))
+        pc, pu = np.array(pc), np.array(pu); gap = pu - pc
+        try:    p = stats.ttest_rel(pu, pc).pvalue
+        except Exception: p = float("nan")
+        rows.append(dict(metric=m, n_dis=len(gap),
+                         certain=pc.mean() if len(pc) else np.nan,
+                         other=pu.mean() if len(pu) else np.nan,
+                         gap=gap.mean() if len(gap) else np.nan,
+                         gap_std=gap.std() if len(gap) else np.nan,
+                         paired_t_p=p))
+    return pd.DataFrame(rows).set_index("metric")
+
+UNCERTAIN_TYPES = ["presence", "spatial", "diagnostic"]
+
+# per-type sample sizes (unique study-finding pairs, excl. cardiomegaly)
+print("\nfindings per type:", {t:int((tp.unc_type==t).sum()) for t in ["certain"]+UNCERTAIN_TYPES})
+
+for lab in ["uncertain(any)"] + UNCERTAIN_TYPES:
+    if lab == "uncertain(any)":
+        d = tp[tp.unc_type.isin(["certain"] + UNCERTAIN_TYPES)].copy()
+        d["unc_type"] = np.where(d.unc_type=="certain", "certain", "uncertain")
+        pos = "uncertain"
+    else:
+        d, pos = tp, lab
+    print(f"\n================  MACRO (across diseases, no folds): certain vs {pos}"
+          f"  (excl. cardiomegaly)  ================")
+    print(macro_nofold(d, pos).round(4).to_string())
 """))
 
 # =============================================================================
 
 nb = nbf.v4.new_notebook()
+
 nb["cells"] = cells
 nb["metadata"] = {
     "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},

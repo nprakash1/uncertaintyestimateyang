@@ -508,15 +508,27 @@ print("fold x group:\n", pd.crosstab(matched.fold, matched.group).to_string())
 """))
 
 # ---- Cell 9: aggregate metrics across folds --------------------------------
-cells.append(md(r"""## Cell 9 — metrics per fold, aggregated across folds
+cells.append(md(r"""## Cell 9 — OVERALL metrics per fold, aggregated across folds
 
-For each fold we compute, for **certain** and **uncertain**:
-* **micro** = mean over all rows in the group,
-* **macro** = mean of per-disease means (every disease weighted equally →
-  cardiomegaly-robust).
-Then we aggregate **mean ± std across the 5 folds** and report the
-uncertain−certain gap with a paired t-test across folds.
+One certain vs one uncertain number **per metric** (disease collapsed). For each
+fold we compute, for **certain** and **uncertain**:
+* **micro** = mean over **all rows** (each *finding* weighted equally). Common,
+  high-volume diseases (cardiomegaly, large effusion) pull this toward their own
+  value.
+* **macro** = mean of **per-disease means** (each *disease* weighted equally →
+  cardiomegaly-robust; a rare lesion counts as much as a common one).
+
+*Worked example* — certain group with cardiomegaly (500 findings, IoU 0.80) and
+pneumonia (30 findings, IoU 0.20):
+`micro = (500·0.80 + 30·0.20)/530 ≈ 0.766` (cardiomegaly dominates) vs
+`macro = (0.80 + 0.20)/2 = 0.50` (equal weight). If micro and macro **agree** the
+effect is robust; if they **diverge**, the effect is concentrated in either the
+high- or low-frequency diseases.
+
+We aggregate **mean ± std across the 5 folds** and report the uncertain−certain
+gap with a paired t-test across folds (H0: gap = 0).
 """))
+
 cells.append(code(r"""import numpy as np, pandas as pd
 from scipy import stats
 
@@ -559,9 +571,18 @@ folds.round(4)
 # ---- Cell 10: per-disease stratified table ---------------------------------
 cells.append(md(r"""## Cell 10 — per-disease certain vs uncertain (aggregated across folds)
 
-Within each disease, the certain-vs-uncertain gap for every metric, averaged
-across folds (mean±std). This is the stratified view you asked for.
+**How this differs from Cell 9:** Cell 9 gives ONE overall number per metric
+(disease collapsed) — "overall, is uncertain worse than certain?". Cell 10 keeps
+each disease **separate** and reports the certain-vs-uncertain gap **within each
+disease** — "WHERE does the effect live?". In fact **Cell 9's macro number is
+exactly the average of Cell 10's per-disease numbers**; this table is the
+un-averaged view, so a real effect in one lesion type isn't washed out by the
+others (and you can see which diseases drive or dilute the overall gap).
+
+Below: within each disease, the certain-vs-uncertain gap for every metric,
+averaged across folds (mean±std).
 """))
+
 cells.append(code(r"""import numpy as np, pandas as pd
 
 def per_disease_table(metric):
@@ -613,7 +634,56 @@ plt.tight_layout(); plt.savefig(os.path.join(WORK_DIR,"balanced_kfold_disease_ga
 print("saved plots ->", WORK_DIR)
 """))
 
+# ---- Cell 12: calibration --------------------------------------------------
+cells.append(md(r"""## Cell 12 — calibration: does confidence track segmentation quality?
+
+The gap tables can show that uncertain findings get **lower IoU** while the
+model's **confidence stays the same** (`p_in_pred` ≈ equal). That is a
+**mis-calibration** signature: the model gets less accurate without becoming less
+confident. This cell quantifies it directly on the matched set:
+
+1. **Confidence→accuracy correlation** — Pearson/Spearman of `p_in_gt` (prob mass
+   on the true lesion) vs `iou`, computed **separately for certain and
+   uncertain**. If confidence were well-calibrated, higher confidence should
+   predict higher IoU *equally* in both groups; a weaker correlation in the
+   uncertain arm means confidence is a worse quality signal there.
+2. **Reliability curve** — bin findings by `p_in_gt` and plot mean IoU per bin for
+   each group. A group whose curve sits **below** the other delivers less IoU for
+   the *same* confidence → over-confident.
+"""))
+
+cells.append(code(r"""import numpy as np, pandas as pd, matplotlib.pyplot as plt, os
+from scipy import stats
+
+cal = matched.dropna(subset=["iou","p_in_gt"]).copy()
+
+print("confidence(p_in_gt) -> accuracy(iou) correlation, by group:")
+print(f"{'group':10s} {'n':>5s} {'Pearson r':>10s} {'p':>10s} {'Spearman r':>11s} {'p':>10s}")
+for grp, g in cal.groupby("group"):
+    pr, pp = stats.pearsonr(g.p_in_gt, g.iou)
+    sr, sp = stats.spearmanr(g.p_in_gt, g.iou)
+    print(f"{grp:10s} {len(g):5d} {pr:10.3f} {pp:10.3g} {sr:11.3f} {sp:10.3g}")
+
+# reliability curve: mean IoU vs binned p_in_gt, per group
+bins = np.linspace(0, 1, 9)
+ctr = 0.5*(bins[1:]+bins[:-1])
+fig, ax = plt.subplots(figsize=(7,5))
+for grp, color in [("certain","tab:blue"), ("uncertain","tab:orange")]:
+    g = cal[cal.group==grp].copy()
+    g["b"] = pd.cut(g.p_in_gt, bins, labels=False, include_lowest=True)
+    mean_iou = g.groupby("b").iou.mean().reindex(range(len(ctr)))
+    ax.plot(ctr, mean_iou.values, "-o", color=color, label=f"{grp} (n={len(g)})")
+ax.plot([0,1],[0,1], "k--", lw=1, alpha=0.5, label="perfect (IoU=confidence)")
+ax.set_xlabel("mean prob on true lesion (p_in_gt)  [confidence]")
+ax.set_ylabel("mean IoU  [accuracy]")
+ax.set_title("Reliability: does higher confidence -> higher IoU?")
+ax.legend(); plt.tight_layout()
+plt.savefig(os.path.join(WORK_DIR,"balanced_kfold_calibration.png"), dpi=120); plt.show()
+print("saved calibration plot ->", WORK_DIR)
+"""))
+
 # =============================================================================
+
 nb = nbf.v4.new_notebook()
 nb["cells"] = cells
 nb["metadata"] = {

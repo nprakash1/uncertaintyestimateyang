@@ -691,13 +691,22 @@ non-zero.
 cells.append(code(r"""import os, numpy as np, pandas as pd
 from scipy import stats
 
-TYPES_CSV = os.path.join(WORK_DIR, "uncertainty_types_test.csv")
-assert os.path.exists(TYPES_CSV), (
-    "missing uncertainty_types_test.csv - run the uncertainty_type_diagnostic "
-    "notebook first (it saves to the same WORK_DIR).")
+# accept any of these fine-type files in WORK_DIR (or /content); first hit wins
+TYPE_CANDIDATES = ["uncertainty_types_test.csv", "uncertainty_types_regression.csv",
+                   "uncertainty_types.csv"]
+TYPES_CSV = next((p for d in (WORK_DIR, "/content")
+                  for p in (os.path.join(d, f) for f in TYPE_CANDIDATES)
+                  if os.path.exists(p)), None)
+assert TYPES_CSV is not None, (
+    "no fine-type CSV found. Put one of " + ", ".join(TYPE_CANDIDATES) +
+    " in WORK_DIR (it needs columns study_id,target,unc_type). Either run the "
+    "uncertainty_type_diagnostic notebook, or upload your existing "
+    "uncertainty_types_regression.csv.")
+print("using fine-type labels from:", TYPES_CSV)
 types = (pd.read_csv(TYPES_CSV)[["study_id","target","unc_type"]]
          .rename(columns={"target":"disease"})
          .drop_duplicates(["study_id","disease"]))
+
 
 # attach fine type to the cached per-pair metrics; drop cardiomegaly
 tp = pair_df.merge(types, on=["study_id","disease"], how="inner")

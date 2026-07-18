@@ -230,12 +230,25 @@ import numpy as np, pandas as pd
 from PIL import Image
 
 manifest = pd.read_csv(SUBSET_MANIFEST)
+
+# Prefer the fuller fine-type CSV (more pairs); collapse unc_type -> binary.
+_LABEL_CSV_CANDIDATES = ["uncertainty_types_regression.csv", "uncertainty_types_test.csv"]
+_label_csv = next((p for d in (WORK_DIR, "/content")
+                   for p in (os.path.join(d, f) for f in _LABEL_CSV_CANDIDATES)
+                   if os.path.exists(p)), None)
+
 unc = {}
-if os.path.exists(UNC_LABELS_PATH):
+if _label_csv is not None:
+    _t = pd.read_csv(_label_csv)[["study_id", "target", "unc_type"]].dropna()
+    _bin = np.where(_t.unc_type.astype(str).str.lower() == "certain", "certain", "uncertain")
+    unc = {f"{sid}|{tgt}": lab for sid, tgt, lab in zip(_t.study_id, _t.target, _bin)}
+    print(f"loaded {len(unc)} labels from fine-type CSV: {os.path.basename(_label_csv)}")
+elif os.path.exists(UNC_LABELS_PATH):
     unc = {k: v["uncertainty_label"] for k, v in json.load(open(UNC_LABELS_PATH)).items()}
-    print(f"loaded {len(unc)} MedGemma uncertainty labels")
+    print(f"loaded {len(unc)} MedGemma uncertainty labels from JSON subset")
 else:
-    print("[ERROR] no MedGemma labels; run Phase A of the reproduction notebook first.")
+    print("[ERROR] no labels found; add uncertainty_types_regression.csv to WORK_DIR "
+          "or run Phase A of the reproduction notebook first.")
 manifest["uncertainty_label"] = manifest.apply(
     lambda r: unc.get(f"{r.study_id}|{r.target}", "unknown"), axis=1)
 

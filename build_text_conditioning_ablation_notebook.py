@@ -55,10 +55,32 @@ every positive pair with the correct prompt and three corrupted prompts
 (*wrong disease*, *wrong location*, *wrong both*) and measure both **accuracy vs
 the silver mask** and **how much the predicted mask itself moves**.
 
-Run order: **Cell 1 (install) → Restart runtime → Cells 2..end**. The inference
-cell is resumable (safe to re-run after a disconnect); a full run over all
-positives × 4 flavors can take several hours.
+The inference cell is resumable (safe to re-run after a disconnect); a full run
+over all positives × 4 flavors can take several hours.
 """))
+
+cells.append(md(r"""## ▶ RUN ORDER (read this first)
+
+MedGemma (Cell 8) and RoSALIA (Cell 5) need **incompatible** transformers
+versions, so Option B is a **two-phase** run.
+
+**Phase A — generate MedGemma prompts (fresh runtime, DO NOT run Cell 1):**
+`Cell 2` → `Cell 3` (set `USE_MEDGEMMA_CORRUPTION=True`, `FLUSH_PROMPT_CACHE=True`)
+→ `Cell 8`.  This writes `..._medgemma.csv` to Drive (source column == `medgemma`).
+
+**Phase B — run RoSALIA using that cache (restart into a fresh runtime):**
+`Cell 1` → **Restart** → `Cell 2` → `Cell 3` (keep `USE_MEDGEMMA_CORRUPTION=True`,
+set `FLUSH_PROMPT_CACHE=False`) → `Cell 3b` → `Cell 4` → `Cell 5` → `Cell 6` →
+`Cell 7` → `Cell 8` (just LOADS the cache) → `Cell 9` (inference) → `Cell 10`
+→ `Cell 11` → `Cell 12`.
+
+**Cells 9–12 need Cells 4, 5, 6, 7 to have run first** (they define `load_image`,
+`segment`, the metrics, and the Option-A fallback). Run top-to-bottom.
+
+**Option A only (no MedGemma):** single phase — set
+`USE_MEDGEMMA_CORRUPTION=False`, then `Cell 1` → Restart → Cells 2–12.
+"""))
+
 
 # ---- Cell 1: install (verbatim from balanced-kfold) ------------------------
 cells.append(md(r"""## Cell 1 — install pinned deps, then **RESTART RUNTIME**"""))
@@ -885,9 +907,22 @@ pairs). No masks are persisted (the gallery re-runs a handful for plotting).
 cells.append(code(r"""import os, numpy as np, pandas as pd
 from tqdm.auto import tqdm
 
+# --- preflight: Cell 9 depends on earlier cells. Fail loudly (once) with the
+# --- exact fix instead of spamming a NameError skip for every pair.
+_need = {"load_image":"Cell 4", "load_silver_mask":"Cell 4", "segment":"Cell 5",
+         "acc_metrics":"Cell 6", "mask_change":"Cell 6", "_prob_grid":"Cell 6",
+         "prompts_df":"Cell 8", "pos":"Cell 4/7"}
+_missing = {n: c for n, c in _need.items() if n not in globals()}
+if _missing:
+    raise RuntimeError(
+        "Cell 9 can't run yet -- run the earlier cells first (top-to-bottom). "
+        f"Missing {list(_missing)} -> run: {sorted(set(_missing.values()))}. "
+        "Typical Phase-B order: 3b -> 4 -> 5 -> 6 -> 7 -> 8 -> 9.")
+
 WRONG_FLAVORS = ["wrong_disease","wrong_location","wrong_both"]
 
 done_pairs = set()
+
 if os.path.exists(ABL_CSV):
     _d = pd.read_csv(ABL_CSV)
     done_pairs = set(_d["pair_id"].unique())

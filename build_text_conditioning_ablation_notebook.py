@@ -564,10 +564,74 @@ location-free/bilateral, suffix only on opacity). Any violation → we substitut
 the deterministic **Option-A** value for that field (`MEDGEMMA_ON_FAIL`). We label
 each `(instruction)` once (many pairs share the same instruction) and cache it.
 """))
-cells.append(code(r"""import json, os, re
+cells.append(code(r"""import json, os, re, sys, hashlib, subprocess
 import numpy as np, pandas as pd
 
+# --- Self-contained bootstrap so this cell ALSO works in a FRESH MedGemma-only
+# --- runtime where Cells 4 & 7 were NOT run (needed because MedGemma can't share
+# --- a kernel with RoSALIA). If Cell 7 already ran, we transparently reuse it.
+DISEASES = ["cardiomegaly","edema","atelectasis","effusion","opacity","pneumonia","consolidation"]
+if "parse_instruction" not in globals():
+    _INSTR_RE = re.compile(r"^Segment the (.+?)(?: in the (.+?))?(?: and predict its type)?\.$")
+    def parse_instruction(instr):
+        m = _INSTR_RE.match(str(instr).strip())
+        return (m.group(1), m.group(2), "predict its type" in str(instr)) if m else (None, None, False)
+if "loc_tokens" not in globals():
+    def loc_tokens(loc):
+        if not isinstance(loc, str): return set()
+        t = set()
+        for s in ["left","right"]:
+            if s in loc: t.add(s)
+        for z in ["base","mid zone","upper zone"]:
+            if z in loc: t.add(z)
+        return t
+if "render" not in globals():
+    def render(d, l, s):
+        x = f"Segment the {d}"
+        if isinstance(l, str) and l: x += f" in the {l}"
+        if s: x += " and predict its type"
+        return x + "."
+try:
+    pos; assert {"pdis","ploc","psuf"}.issubset(pos.columns)
+except Exception:
+    _man = pd.read_csv(SUBSET_MANIFEST)
+    pos = _man[_man.polarity == "positive"].reset_index(drop=True).copy()
+    _pp = pos["instruction"].map(parse_instruction)
+    pos = pos.assign(pdis=[a[0] for a in _pp], ploc=[a[1] for a in _pp], psuf=[a[2] for a in _pp])
+    print(f"[bootstrap] rebuilt {len(pos)} positives from manifest (image-independent).")
+if "LOC_BANK" not in globals():
+    LOC_BANK = {d: sorted(set(g.ploc.dropna().unique())) for d, g in pos.groupby("pdis")}
+if "SUFFIX_DISEASES" not in globals():
+    SUFFIX_DISEASES = set(pos[pos.psuf].pdis.unique())
+if "corrupt_option_a" not in globals():
+    def _rng_for(pid):
+        h = int(hashlib.md5(f"{pid}|{SEED}".encode()).hexdigest(), 16) & 0xFFFFFFFF
+        return np.random.default_rng(h)
+    def _pick_loc_for(disease, rng, avoid_tokens=None, strict=True):
+        bank = LOC_BANK.get(disease, [])
+        if not bank: return None
+        if avoid_tokens is None: return bank[rng.integers(len(bank))]
+        dj = [L for L in bank if loc_tokens(L) and loc_tokens(L).isdisjoint(avoid_tokens)]
+        if dj: return dj[rng.integers(len(dj))]
+        if strict: return None
+        return bank[rng.integers(len(bank))]
+    def corrupt_option_a(pair_id, disease, location, suffix, strict=True):
+        rng = _rng_for(pair_id); out = {}
+        others = [d for d in DISEASES if d != disease]; wd = others[rng.integers(len(others))]
+        wd_loc = _pick_loc_for(wd, rng)
+        wd_suf = wd in SUFFIX_DISEASES and bool(rng.integers(2)) if wd == "opacity" else False
+        out["wrong_disease"] = dict(text=render(wd, wd_loc, wd_suf), finding=wd, location=wd_loc)
+        wl = _pick_loc_for(disease, rng) if location is None else _pick_loc_for(disease, rng, loc_tokens(location), strict)
+        if wl is None or (location is None and not LOC_BANK.get(disease)):
+            out["wrong_location"] = dict(text=None, finding=disease, location=None)
+        else:
+            out["wrong_location"] = dict(text=render(disease, wl, suffix), finding=disease, location=wl)
+        wb = _pick_loc_for(wd, rng)
+        out["wrong_both"] = dict(text=render(wd, wb, wd_suf), finding=wd, location=wb)
+        return out
+
 ALLOWED_LOCS = set(sum(LOC_BANK.values(), [])) | {None}
+
 
 def _valid_field(finding, location, *, require_finding=None, forbid_finding=None,
                  avoid_tokens=None, allow_null_loc=True, suffix=None, text=None):
@@ -692,26 +756,40 @@ else:
         baseA[r.pair_id] = corrupt_option_a(r.pair_id, r.pdis, r.ploc, r.psuf, LOCATION_STRICT)
 
 
-    # 2) optional MedGemma pass, labelled once per unique instruction
+    # 2) optional MedGemma pass (Option B), labelled once per unique instruction.
     mg_by_instr = {}
     if USE_MEDGEMMA_CORRUPTION:
-        import torch, transformers as _tf
-        # MedGemma needs transformers>=4.50, but RoSALIA (Cell 5) needs 4.34.x and
-        # transformers CANNOT be swapped inside a live kernel (stale imports break
-        # with 'cannot import name PreTrainedConfig'). So MedGemma MUST run in a
-        # FRESH runtime, BEFORE Cell 5 loads RoSALIA.
-        if tuple(int(x) for x in _tf.__version__.split(".")[:2]) < (4, 50) and \
-           ("model" in sys.modules or "rosalia_repo" in "".join(sys.path)):
+        # RoSALIA (transformers 4.34) and MedGemma (>=4.50) CANNOT share a kernel
+        # (swapping transformers mid-session breaks with 'cannot import name
+        # PreTrainedConfig'). So run THIS cell in a FRESH runtime BEFORE Cell 5:
+        #   run Cells 2, 3 (set USE_MEDGEMMA_CORRUPTION=True), then this cell.
+        # It caches CORRUPT_CSV; then Runtime>Restart and run the RoSALIA pass,
+        # where this cell just LOADS the cache.
+        if "LISAForCausalLM" in globals() or "model" in globals():
             raise RuntimeError(
-                "Option B needs transformers>=4.50 but this runtime already has "
-                f"transformers {_tf.__version__} + RoSALIA loaded. Run this cell in a "
-                "FRESH runtime (Runtime -> Disconnect and delete runtime) BEFORE "
-                "running Cell 5, so it caches CORRUPT_CSV; then restart and run "
-                "RoSALIA. Or keep USE_MEDGEMMA_CORRUPTION=False (deterministic Option A).")
-        # pin <5 so we don't pull the 5.x API that renamed PreTrainedConfig.
-        subprocess.run([sys.executable,"-m","pip","-q","install","--upgrade",
-                        "transformers>=4.50,<5","accelerate>=0.30"], check=False)
+                "RoSALIA is loaded in this kernel, so MedGemma can't run here. Start a "
+                "FRESH runtime (Runtime -> Disconnect and delete runtime), run Cells 2 & 3, "
+                "then THIS cell to cache CORRUPT_CSV; restart and run the RoSALIA pass. "
+                "Or keep USE_MEDGEMMA_CORRUPTION=False (deterministic Option A).")
+        # ensure a MedGemma-capable transformers (4.5x). If we had to install it,
+        # the already-imported transformers is stale -> require ONE restart+rerun.
+        _need = True
+        try:
+            import transformers as _tf
+            _v = tuple(int(x) for x in _tf.__version__.split(".")[:2])
+            _need = not ((4, 50) <= _v < (5, 0))
+        except Exception:
+            _need = True
+        if _need:
+            print("[medgemma] installing transformers>=4.50,<5 (pinned <5 to avoid the "
+                  "5.x API rename) ...")
+            subprocess.run([sys.executable,"-m","pip","install","-q",
+                            "transformers>=4.50,<5","accelerate>=0.30"], check=True)
+            raise SystemExit(">>> transformers installed for MedGemma. "
+                             "Runtime > Restart, then RE-RUN THIS CELL. <<<")
+        import torch
         from transformers import AutoProcessor, AutoModelForImageTextToText
+
 
         MODEL_NAME = "google/medgemma-4b-it"
         proc = AutoProcessor.from_pretrained(MODEL_NAME)

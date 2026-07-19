@@ -63,12 +63,25 @@ positives × 4 flavors can take several hours.
 # ---- Cell 1: install (verbatim from balanced-kfold) ------------------------
 cells.append(md(r"""## Cell 1 — install pinned deps, then **RESTART RUNTIME**"""))
 cells.append(code(r"""import subprocess, sys
-TOKENIZERS_VER = "0.13.3"
-TRANSFORMERS_VER = "4.31.0"
+# LISA/ROSALIA was originally pinned to transformers==4.31.0 + tokenizers 0.13.x,
+# but tokenizers 0.13.x has NO prebuilt wheel for Python 3.12 (Colab's current
+# default) and its Rust source no longer compiles cleanly -> build fails.
+# Known-good stack (same as the other RoSALIA notebooks): transformers 4.34.1 +
+# tokenizers 0.14.1, which ships cp310/cp311/cp312 wheels and runs LISA-family
+# models. --only-binary guarantees no Rust compile is even attempted.
+TOKENIZERS_VER   = "0.14.1"
+TRANSFORMERS_VER = "4.34.1"
 
+py = sys.version_info
+print(f"Python {py.major}.{py.minor}.{py.micro}")
 r = subprocess.run(["pip","install","-q","--only-binary=:all:",
                     f"tokenizers=={TOKENIZERS_VER}"], capture_output=True, text=True)
 print(r.stdout[-400:]); print(r.stderr[-400:])
+if r.returncode != 0:
+    raise RuntimeError(
+        f"No prebuilt tokenizers=={TOKENIZERS_VER} wheel for Python "
+        f"{py.major}.{py.minor}. Use Runtime -> Change runtime type -> "
+        "Fallback runtime version (Python 3.11) and re-run this cell.")
 !pip -q install "transformers=={TRANSFORMERS_VER}" 'peft==0.4.0' 'einops==0.4.1' \
     'sentencepiece' 'opencv-python>=4.10' 'pycocotools' 'scikit-image' 'bitsandbytes'
 !pip -q install 'huggingface_hub>=0.16.4,<1.0'
@@ -78,6 +91,7 @@ subprocess.run(["python","-c",
     "'tokenizers',tokenizers.__version__)"])
 print("\n>>> RESTART THE RUNTIME NOW, then run Cell 2 onward. <<<")
 """))
+
 
 # ---- Cell 2: HF login ------------------------------------------------------
 cells.append(md(r"""## Cell 2 — Hugging Face login (ROSALIA/LISA public; MedGemma needs access)"""))

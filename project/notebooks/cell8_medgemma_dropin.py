@@ -205,22 +205,38 @@ else:
                 "FRESH runtime (Runtime -> Disconnect and delete runtime), run Cells 2 & 3, "
                 "then THIS cell to cache CORRUPT_CSV; restart and run the RoSALIA pass. "
                 "Or keep USE_MEDGEMMA_CORRUPTION=False (deterministic Option A).")
-        # ensure a MedGemma-capable transformers (4.5x). If we had to install it,
-        # the already-imported transformers is stale -> require ONE restart+rerun.
-        _need = True
+        # Load MedGemma on WHATEVER transformers this fresh runtime already has
+        # (Colab ships a recent one that supports MedGemma). We do NOT gate on a
+        # version number -- that caused an infinite "install -> restart" loop.
+        # Only if the load actually fails do we do a ONE-TIME pinned reinstall,
+        # guarded by a sentinel file so it can never loop.
+        import torch
+        _SENTINEL = "/content/.medgemma_tf_reinstalled"
+        MODEL_NAME = "google/medgemma-4b-it"
         try:
             import transformers as _tf
-            _v = tuple(int(x) for x in _tf.__version__.split(".")[:2])
-            _need = not ((4, 50) <= _v < (5, 0))
-        except Exception:
-            _need = True
-        if _need:
-            print("[medgemma] installing transformers>=4.50,<5 (pinned <5 to avoid the "
-                  "5.x API rename) ...")
-            subprocess.run([sys.executable,"-m","pip","install","-q",
-                            "transformers>=4.50,<5","accelerate>=0.30"], check=True)
+            print(f"[medgemma] using transformers {_tf.__version__}")
+            from transformers import AutoProcessor, AutoModelForImageTextToText
+            proc = AutoProcessor.from_pretrained(MODEL_NAME)
+            tok = getattr(proc, "tokenizer", None) or proc
+            tok.padding_side = "left"
+            if getattr(tok, "pad_token", None) is None and getattr(tok, "eos_token", None):
+                tok.pad_token = tok.eos_token
+            mg_model = AutoModelForImageTextToText.from_pretrained(
+                MODEL_NAME, torch_dtype=torch.bfloat16, device_map="auto").eval()
+        except Exception as _e:
+            if os.path.exists(_SENTINEL):
+                # already reinstalled once and it STILL fails -> surface the real error
+                raise RuntimeError(
+                    f"MedGemma still won't load after a pinned transformers reinstall: "
+                    f"{type(_e).__name__}: {_e}") from _e
+            open(_SENTINEL, "w").close()
+            print(f"[medgemma] load failed ({type(_e).__name__}: {_e})")
+            print("[medgemma] installing a known-good transformers==4.53.2 (one time) ...")
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade",
+                            "transformers==4.53.2", "accelerate>=0.30"], check=True)
             print("\n" + "="*72)
-            print(">>> transformers for MedGemma is installed. NEXT STEPS:")
+            print(">>> Installed a MedGemma-compatible transformers. NEXT STEPS:")
             print("    1) Runtime > Restart session   (menu, or Ctrl/Cmd+M .)")
             print("    2) Re-run Cell 2 (login) and Cell 3 (config, keep")
             print("       USE_MEDGEMMA_CORRUPTION=True), THEN re-run THIS cell.")
@@ -228,18 +244,6 @@ else:
             print("="*72)
             raise SystemExit
 
-        import torch
-        from transformers import AutoProcessor, AutoModelForImageTextToText
-
-
-        MODEL_NAME = "google/medgemma-4b-it"
-        proc = AutoProcessor.from_pretrained(MODEL_NAME)
-        tok = getattr(proc, "tokenizer", None) or proc
-        tok.padding_side = "left"
-        if getattr(tok,"pad_token",None) is None and getattr(tok,"eos_token",None):
-            tok.pad_token = tok.eos_token
-        mg_model = AutoModelForImageTextToText.from_pretrained(
-            MODEL_NAME, torch_dtype=torch.bfloat16, device_map="auto").eval()
         from tqdm.auto import tqdm
         uniq = sorted(pos["instruction"].unique())
         print(f"[medgemma] labelling {len(uniq)} unique instructions ...")

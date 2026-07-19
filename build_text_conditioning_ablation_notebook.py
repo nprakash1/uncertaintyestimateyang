@@ -183,8 +183,9 @@ LOCATION_STRICT         = True      # True: wrong_location must be spatially DIS
 # run Cell 8 in a FRESH runtime (before Cell 5) to cache the prompt CSV, then
 # restart and run RoSALIA which just reads the cache. Default is deterministic
 # Option A (no transformers change, already validated: 0 grammar violations).
-USE_MEDGEMMA_CORRUPTION = False     # Option B: MedGemma proposes corruptions (validated)
+USE_MEDGEMMA_CORRUPTION = True      # Option B: MedGemma proposes corruptions (validated)
 MEDGEMMA_ON_FAIL        = "fallback"  # "fallback" (use Option A) | "drop"
+
 
 N_GALLERY               = 36        # >=30 qualitative examples to print
 # Set True to IGNORE any cached prompt CSV and rebuild the corruptions from

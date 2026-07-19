@@ -156,8 +156,14 @@ LESIONS = ["cardiomegaly","pneumonia","atelectasis","opacity",
 SEED                    = 42        # global seed; per-pair RNG is derived from pair_id
 LOCATION_STRICT         = True      # True: wrong_location must be spatially DISJOINT
                                     # False: allow any different attested location (relaxed)
-USE_MEDGEMMA_CORRUPTION = True      # Option B: MedGemma proposes corruptions (validated)
+# Option B (MedGemma) needs transformers>=4.50, but RoSALIA (Cell 5) needs 4.34.x
+# and the two CANNOT coexist in one runtime. So MedGemma is a SEPARATE Phase A:
+# run Cell 8 in a FRESH runtime (before Cell 5) to cache the prompt CSV, then
+# restart and run RoSALIA which just reads the cache. Default is deterministic
+# Option A (no transformers change, already validated: 0 grammar violations).
+USE_MEDGEMMA_CORRUPTION = False     # Option B: MedGemma proposes corruptions (validated)
 MEDGEMMA_ON_FAIL        = "fallback"  # "fallback" (use Option A) | "drop"
+
 N_GALLERY               = 36        # >=30 qualitative examples to print
 ABL_CSV = os.path.join(WORK_DIR, f"text_cond_ablation_{MANIFEST_CHOICE}.csv")
 CORRUPT_CSV = os.path.join(WORK_DIR, f"text_cond_prompts_{MANIFEST_CHOICE}.csv")
@@ -444,7 +450,15 @@ per-disease **template banks** from the manifest, then generate seeded wrong
 prompts that stay in-distribution. `wrong_location` is set to **N/A** when no
 spatially-disjoint location exists (location-free findings like cardiomegaly, or
 bilateral "both lungs" findings) — unless `LOCATION_STRICT=False`.
+
+> **Where does "location" come from?** We do **not** use the manifest's
+> `location` column — it's empty for ~67% of positives. Instead we regex-parse
+> location out of the `instruction` string itself (e.g. `"Segment the edema in
+> the left lung."` → `left lung`), which is exactly the text RoSALIA is
+> conditioned on. Instructions with no location clause (`"Segment the
+> cardiomegaly."`) parse to `location=None` and become `wrong_location = N/A`.
 """))
+
 cells.append(code(r"""import re, hashlib
 import numpy as np, pandas as pd
 
@@ -681,10 +695,24 @@ else:
     # 2) optional MedGemma pass, labelled once per unique instruction
     mg_by_instr = {}
     if USE_MEDGEMMA_CORRUPTION:
-        import torch
+        import torch, transformers as _tf
+        # MedGemma needs transformers>=4.50, but RoSALIA (Cell 5) needs 4.34.x and
+        # transformers CANNOT be swapped inside a live kernel (stale imports break
+        # with 'cannot import name PreTrainedConfig'). So MedGemma MUST run in a
+        # FRESH runtime, BEFORE Cell 5 loads RoSALIA.
+        if tuple(int(x) for x in _tf.__version__.split(".")[:2]) < (4, 50) and \
+           ("model" in sys.modules or "rosalia_repo" in "".join(sys.path)):
+            raise RuntimeError(
+                "Option B needs transformers>=4.50 but this runtime already has "
+                f"transformers {_tf.__version__} + RoSALIA loaded. Run this cell in a "
+                "FRESH runtime (Runtime -> Disconnect and delete runtime) BEFORE "
+                "running Cell 5, so it caches CORRUPT_CSV; then restart and run "
+                "RoSALIA. Or keep USE_MEDGEMMA_CORRUPTION=False (deterministic Option A).")
+        # pin <5 so we don't pull the 5.x API that renamed PreTrainedConfig.
         subprocess.run([sys.executable,"-m","pip","-q","install","--upgrade",
-                        "transformers>=4.50","accelerate>=0.30"], check=False)
+                        "transformers>=4.50,<5","accelerate>=0.30"], check=False)
         from transformers import AutoProcessor, AutoModelForImageTextToText
+
         MODEL_NAME = "google/medgemma-4b-it"
         proc = AutoProcessor.from_pretrained(MODEL_NAME)
         tok = getattr(proc, "tokenizer", None) or proc

@@ -785,8 +785,15 @@ else:
                   "5.x API rename) ...")
             subprocess.run([sys.executable,"-m","pip","install","-q",
                             "transformers>=4.50,<5","accelerate>=0.30"], check=True)
-            raise SystemExit(">>> transformers installed for MedGemma. "
-                             "Runtime > Restart, then RE-RUN THIS CELL. <<<")
+            print("\n" + "="*72)
+            print(">>> transformers for MedGemma is installed. NEXT STEPS:")
+            print("    1) Runtime > Restart session   (menu, or Ctrl/Cmd+M .)")
+            print("    2) Re-run Cell 2 (login) and Cell 3 (config, keep")
+            print("       USE_MEDGEMMA_CORRUPTION=True), THEN re-run THIS cell.")
+            print("    (The 'To exit: use quit' warning below is harmless.)")
+            print("="*72)
+            raise SystemExit
+
         import torch
         from transformers import AutoProcessor, AutoModelForImageTextToText
 

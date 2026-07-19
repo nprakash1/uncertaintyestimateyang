@@ -165,12 +165,24 @@ USE_MEDGEMMA_CORRUPTION = False     # Option B: MedGemma proposes corruptions (v
 MEDGEMMA_ON_FAIL        = "fallback"  # "fallback" (use Option A) | "drop"
 
 N_GALLERY               = 36        # >=30 qualitative examples to print
-ABL_CSV = os.path.join(WORK_DIR, f"text_cond_ablation_{MANIFEST_CHOICE}.csv")
-CORRUPT_CSV = os.path.join(WORK_DIR, f"text_cond_prompts_{MANIFEST_CHOICE}.csv")
+# Set True to IGNORE any cached prompt CSV and rebuild the corruptions from
+# scratch (use this for the ONE MedGemma generation run if you want to be 100%
+# sure MedGemma is actually called). Set back to False for the RoSALIA phase,
+# which must LOAD the cache (it can't regenerate MedGemma in the RoSALIA kernel).
+FLUSH_PROMPT_CACHE      = False
+
+# Tag output files by corruption method so an Option-A cache is NOT silently
+# reused when you switch to Option B (MedGemma) and vice-versa.
+_CORR_TAG = "medgemma" if USE_MEDGEMMA_CORRUPTION else "optA"
+ABL_CSV = os.path.join(WORK_DIR, f"text_cond_ablation_{MANIFEST_CHOICE}_{_CORR_TAG}.csv")
+CORRUPT_CSV = os.path.join(WORK_DIR, f"text_cond_prompts_{MANIFEST_CHOICE}_{_CORR_TAG}.csv")
+
 print(f"[config] {MANIFEST_CHOICE} | strict_loc={LOCATION_STRICT} | "
-      f"medgemma={USE_MEDGEMMA_CORRUPTION} | seed={SEED}")
+      f"medgemma={USE_MEDGEMMA_CORRUPTION} | flush={FLUSH_PROMPT_CACHE} | seed={SEED}")
+print("[config] CORRUPT_CSV =", CORRUPT_CSV)
 print("zips present?", {os.path.basename(z): os.path.exists(z) for z in IMG_ZIPS},
       "| ext:", os.path.exists(EXT_ZIP))
+
 """))
 
 # ---- Cell 3b: extract zips (verbatim) --------------------------------------
@@ -746,10 +758,26 @@ def _merge_with_fallback(instr, mg, base_a, strict):
     return result
 
 # ---- build the prompt table for every positive pair ----
-if os.path.exists(CORRUPT_CSV):
-    prompts_df = pd.read_csv(CORRUPT_CSV)
+# Guard: don't reuse an Option-A cache when the user asked for MedGemma. If the
+# cached file has ZERO medgemma-sourced rows but USE_MEDGEMMA_CORRUPTION=True,
+# rebuild it (this is what silently happened before -> every source == option_A).
+_FLUSH = globals().get("FLUSH_PROMPT_CACHE", False)
+_use_cache = os.path.exists(CORRUPT_CSV) and not _FLUSH
+if os.path.exists(CORRUPT_CSV) and _FLUSH:
+    print(f"[prompts] FLUSH_PROMPT_CACHE=True -> ignoring cached {CORRUPT_CSV}, rebuilding ...")
+if _use_cache:
+    _cached = pd.read_csv(CORRUPT_CSV)
+    _srcs = set(map(str, _cached.get("source", pd.Series([], dtype=str)).unique()))
+    if USE_MEDGEMMA_CORRUPTION and "medgemma" not in _srcs:
+        print(f"[prompts] cached {CORRUPT_CSV} has NO medgemma rows "
+              f"(sources={_srcs}); rebuilding WITH MedGemma ...")
+        _use_cache = False
+
+if _use_cache:
+    prompts_df = _cached
     print(f"[prompts] loaded cached {len(prompts_df)} rows from {CORRUPT_CSV}")
 else:
+
     # 1) deterministic Option-A for every pair (always available)
     baseA = {}
     for r in pos.itertuples():

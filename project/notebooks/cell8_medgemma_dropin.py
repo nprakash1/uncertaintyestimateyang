@@ -180,10 +180,26 @@ def _merge_with_fallback(instr, mg, base_a, strict):
     return result
 
 # ---- build the prompt table for every positive pair ----
-if os.path.exists(CORRUPT_CSV):
-    prompts_df = pd.read_csv(CORRUPT_CSV)
+# Guard: don't reuse an Option-A cache when the user asked for MedGemma. If the
+# cached file has ZERO medgemma-sourced rows but USE_MEDGEMMA_CORRUPTION=True,
+# rebuild it (this is what silently happened before -> every source == option_A).
+_FLUSH = globals().get("FLUSH_PROMPT_CACHE", False)
+_use_cache = os.path.exists(CORRUPT_CSV) and not _FLUSH
+if os.path.exists(CORRUPT_CSV) and _FLUSH:
+    print(f"[prompts] FLUSH_PROMPT_CACHE=True -> ignoring cached {CORRUPT_CSV}, rebuilding ...")
+if _use_cache:
+    _cached = pd.read_csv(CORRUPT_CSV)
+    _srcs = set(map(str, _cached.get("source", pd.Series([], dtype=str)).unique()))
+    if USE_MEDGEMMA_CORRUPTION and "medgemma" not in _srcs:
+        print(f"[prompts] cached {CORRUPT_CSV} has NO medgemma rows "
+              f"(sources={_srcs}); rebuilding WITH MedGemma ...")
+        _use_cache = False
+
+if _use_cache:
+    prompts_df = _cached
     print(f"[prompts] loaded cached {len(prompts_df)} rows from {CORRUPT_CSV}")
 else:
+
     # 1) deterministic Option-A for every pair (always available)
     baseA = {}
     for r in pos.itertuples():
